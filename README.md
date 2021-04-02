@@ -20,5 +20,5 @@ This script blocks Telemetry related domains via the hosts file and related IPs 
 
 Run the latest version of the script automatically:
 ```powershell
-iwr -useb 'https://raw.githubusercontent.com/simeononsecurity/System-Wide-Windows-Ad-Blocker/main/sos-system-wide-windows-ad-block.ps1' |iex
+iwr -useb 'https://raw.githubusercontent.com/simeononsecurity/System-Wide-Windows-Ad-Blocker/main/sos-system-wide-windows-ad-block.ps1' | iex
 ```
