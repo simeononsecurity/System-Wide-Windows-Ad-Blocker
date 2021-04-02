@@ -12,5 +12,5 @@ Block Ads, Tracking, and Telemetry System Wide
 
 ### Example:
 ```powershell
-.\sos-system-wide-windows-ad-block.ps1
+.\"sos-system-wide-windows-ad-block.ps1"
 ```
