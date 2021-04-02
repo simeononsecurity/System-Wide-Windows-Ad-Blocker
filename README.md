@@ -17,6 +17,8 @@ This script blocks Telemetry related domains via the hosts file and related IPs 
 - [Peter Lowe’s ad/tracking/malware servers](https://pgl.yoyo.org/adservers/policy.php)
 
 ### Example:
+
+Run the latest version of the script automatically:
 ```powershell
-.\"sos-system-wide-windows-ad-block.ps1"
+iwr -useb 'https://raw.githubusercontent.com/simeononsecurity/System-Wide-Windows-Ad-Blocker/main/sos-system-wide-windows-ad-block.ps1' |iex
 ```
