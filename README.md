@@ -1,10 +1,7 @@
 # System-Wide-Windows-Ad-Blocker
-Block Ads, Tracking, and Telemetry System Wide 
+This script blocks Ads and Telemetry related domains via the hosts file and related IPs via Windows Firewall.
 
 *We are seeking all comments and concerns for this repo. Please submit an [issue](https://github.com/simeononsecurity/System-Wide-Windows-Ad-Blocker/issues) with any information you might have.*
-
-## Description:
-This script blocks Telemetry related domains via the hosts file and related IPs via Windows Firewall.
 
 **Notes:**
 - Adding these domains may break certain software like iTunes or Skype
