@@ -18,7 +18,6 @@ $ErrorActionPreference = 'silentlycontinue'
 #Require elivation for script run
 #Requires -RunAsAdministrator
 
-Write-Output "Adding Telemetry domains to hosts file"
 $hosts_file = "$env:systemroot\System32\drivers\etc\hosts"
 $domains = @(
     "00-gov.cn"
@@ -45296,15 +45295,7 @@ $domains = @(
     "zzyonghao.com"
     "zzznews.ru"
 )
-Write-Output "" | Out-File -Encoding ASCII -Append $hosts_file
-foreach ($domain in $domains) {
-    if (-Not (Select-String -Path $hosts_file -Pattern $domain)) {
-        Write-Output "0.0.0.0 $domain" | Out-File -Encoding ASCII -Append $hosts_file
-    }
-}
 
-
-Write-Output "Adding Telemetry ips to firewall"
 $ips = @(
     "103.245.223.129"
     "103.245.223.131"
@@ -55640,6 +55631,21 @@ $ips = @(
     "99.192.245.153"
     "99.63.194.183"
 )
+
+Write-Output "Adding Telemetry domains to hosts file"
+Write-Output "" | Out-File -Encoding ASCII -Append $hosts_file
+foreach ($domain in $domains) {
+    if (-Not (Select-String -Path $hosts_file -Pattern $domain)) {
+        Write-Output "Blocking $domain"
+        Write-Output "0.0.0.0 $domain" | Out-File -Encoding ASCII -Append $hosts_file
+    }
+}
+
+Write-Output "Adding Telemetry ips to firewall"
+foreach ($ip in $ips) {
+    Write-Output "Blocking $ip"
+}
+
 Remove-NetFirewallRule -DisplayName "Block Telemetry IPs" -ErrorAction SilentlyContinue | Out-Null
 New-NetFirewallRule -DisplayName "Block Telemetry IPs" -Direction Outbound `
     -Action Block -RemoteAddress ([string[]]$ips) | Out-Null
