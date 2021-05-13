@@ -14,6 +14,7 @@ This script blocks Ads and Telemetry related domains via the hosts file and rela
 - [AdGuard DNS filter](https://github.com/AdguardTeam/AdguardSDNSFilter) / [JustDomains - AdGuard Simplified Domain Names Filter](https://justdomains.github.io/blocklists/lists/adguarddns-justdomains.txt)
 - [YoYo Lists](https://pgl.yoyo.org/adservers/serverlist.php)
 - [Peter Lowe’s ad/tracking/malware servers](https://pgl.yoyo.org/adservers/policy.php)
+- [StevenBlack/hosts - adware + malware](https://github.com/StevenBlack/hosts)
 
 ### Example:
 
