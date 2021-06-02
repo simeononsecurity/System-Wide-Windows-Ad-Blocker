@@ -13,7 +13,8 @@ This script blocks Telemetry, Ads, and Malware related domains via the hosts fil
 .\sos-system-wide-windows-ad-block.ps1
 ```
 #### Automated install:
-Run the latest version of the script automatically (currently unworking.. please run manual install):
+Run the latest version of the script automatically:
 ```powershell
-iwr -useb 'https://raw.githubusercontent.com/simeononsecurity/System-Wide-Windows-Ad-Blocker/main/sos-system-wide-windows-ad-block.ps1' | iex
+iwr -useb 'https://simeononsecurity.ch/scripts/soswindowsadblocker.ps1' | iex
 ```
+
