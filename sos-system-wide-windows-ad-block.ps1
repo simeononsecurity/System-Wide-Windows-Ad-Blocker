@@ -79,9 +79,9 @@ Else {
         } 
     }
     # Finally, we clean up the http request by closing it.
-    If ($HTTP_Response -eq $null) { } 
+    If ($null -eq $HTTP_Response) { } 
     Else { $HTTP_Response.Close() }
 }
 # Finally, we clean up the http request by closing it.
-If ($HTTP_Response -eq $null) { } 
+If ($null -eq $HTTP_Response) { } 
 Else { $HTTP_Response.Close() }
