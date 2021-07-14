@@ -11,6 +11,12 @@ $ErrorActionPreference = 'silentlycontinue'
 #Require elivation for script run
 #Requires -RunAsAdministrator
 
+#Set Directory to PSScriptRoot
+if ((Get-Location).Path -NE $PSScriptRoot) { Set-Location $PSScriptRoot }
+
+Write-Host "Implementing simeononsecurity/System-Wide-Windows-Ad-Blocker" -ForegroundColor Green -BackgroundColor Black
+Write-Host "https://github.com/simeononsecurity/System-Wide-Windows-Ad-Blocker" -ForegroundColor Green -BackgroundColor Black
+
 #Specify host file location
 $hosts_file = "$env:systemroot\System32\drivers\etc\hosts"
 
@@ -27,16 +33,16 @@ $HTTP_Response = $HTTP_Request.GetResponse()
 # We then get the HTTP code as an integer.
 $HTTP_Status = [int]$HTTP_Response.StatusCode
 If ($HTTP_Status -eq 200) {
-    Write-Host "Repo Access is Available. Downloading Latest Host File"
-    Invoke-WebRequest -Uri "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts" -OutFile ./Files/hosts.txt
-    Write-Output "Writing to System Host File...."
+    Write-Host "Repo Access is Available. Downloading Latest Host File" -ForegroundColor White -BackgroundColor Black
+    Invoke-WebRequest -Uri "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts" -OutFile $PSScriptRoot/Files/hosts.txt
+    Write-Output "Writing to System Host File...." -ForegroundColor White -BackgroundColor Black
     Try {
         Write-Output "" | Out-File -Encoding ASCII $hosts_file
-        Get-Content ./Files/hosts.txt | Out-File -Encoding ASCII -Append $hosts_file
-        Write-Output "Write Successful.."
+        Get-Content $PSScriptRoot/Files/hosts.txt | Out-File -Encoding ASCII -Append $hosts_file
+        Write-Output "Write Successful.." -ForegroundColor Green -BackgroundColor Black
     }
     Catch {
-        Write-Output "Error writing to System Host File...."
+        Write-Output "Error writing to System Host File...." -ForegroundColor Red -BackgroundColor Black
     }    
 }
 Else {
@@ -48,28 +54,28 @@ Else {
     # We then get the HTTP code as an integer.
     $HTTP_Status2 = [int]$HTTP_Response.StatusCode
     If ($HTTP_Status2 -eq 200) {
-        Write-Host "Repo Access is Available. Downloading Latest Host File"
-        Invoke-WebRequest -Uri "http://sbc.io/hosts/hosts" -OutFile ./Files/hosts.txt
-        Write-Output "Writing to System Host File...."
+        Write-Host "Repo Access is Available. Downloading Latest Host File" -ForegroundColor White -BackgroundColor Black
+        Invoke-WebRequest -Uri "http://sbc.io/hosts/hosts" -OutFile $PSScriptRoot/Files/hosts.txt
+        Write-Output "Writing to System Host File...." -ForegroundColor White -BackgroundColor Black
         Try {
             Write-Output "" | Out-File -Encoding ASCII $hosts_file
-            Get-Content ./Files/hosts.txt | Out-File -Encoding ASCII -Append $hosts_file
-            Write-Output "Write Successful.."
+            Get-Content $PSScriptRoot/Files/hosts.txt | Out-File -Encoding ASCII -Append $hosts_file
+            Write-Output "Write Successful.." -ForegroundColor Green -BackgroundColor Black
         }
         Catch {
-            Write-Output "Error writing to System Host File...."
+            Write-Output "Error writing to System Host File...." -ForegroundColor Red -BackgroundColor Black
         }        
     }
     Else {
-        Write-Host "Unable to download host file. Please check your internet and proxy settings...."
-        Write-Host "Continuing with Local Copy..."
+        Write-Host "Unable to download host file. Please check your internet and proxy settings...." -ForegroundColor Red -BackgroundColor Black
+        Write-Host "Continuing with Local Copy..." -ForegroundColor White -BackgroundColor Black
         Try {
             Write-Output "" | Out-File -Encoding ASCII $hosts_file
-            Get-Content ./Files/hosts.txt | Out-File -Encoding ASCII -Append $hosts_file
-            Write-Output "Write Successful.."
+            Get-Content $PSScriptRoot/Files/hosts.txt | Out-File -Encoding ASCII -Append $hosts_file
+            Write-Output "Write Successful.." -ForegroundColor Green -BackgroundColor Black
         }
         Catch {
-            Write-Output "Error writing to System Host File...."
+            Write-Output "Error writing to System Host File...." -ForegroundColor Red -BackgroundColor Black
         } 
     }
     # Finally, we clean up the http request by closing it.
@@ -79,4 +85,3 @@ Else {
 # Finally, we clean up the http request by closing it.
 If ($HTTP_Response -eq $null) { } 
 Else { $HTTP_Response.Close() }
-
