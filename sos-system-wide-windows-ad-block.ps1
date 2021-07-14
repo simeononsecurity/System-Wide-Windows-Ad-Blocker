@@ -1,19 +1,3 @@
-# System-Wide-Windows-Ad-Blocker
-# https://github.com/simeononsecurity/System-Wide-Windows-Ad-Blocker
-# https://simeononsecurity.ch
-
-#  Description:
-#This script blocks Telemetry, Ad, and Malware related domains via the hosts file
-
-#Continue on error
-$ErrorActionPreference = 'silentlycontinue'
-
-#Require elivation for script run
-#Requires -RunAsAdministrator
-
-#Set Directory to PSScriptRoot
-if ((Get-Location).Path -NE $PSScriptRoot) { Set-Location $PSScriptRoot }
-
 Write-Host "Implementing simeononsecurity/System-Wide-Windows-Ad-Blocker" -ForegroundColor Green -BackgroundColor Black
 Write-Host "https://github.com/simeononsecurity/System-Wide-Windows-Ad-Blocker" -ForegroundColor Green -BackgroundColor Black
 
@@ -35,14 +19,14 @@ $HTTP_Status = [int]$HTTP_Response.StatusCode
 If ($HTTP_Status -eq 200) {
     Write-Host "Repo Access is Available. Downloading Latest Host File" -ForegroundColor White -BackgroundColor Black
     Invoke-WebRequest -Uri "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts" -OutFile $PSScriptRoot/Files/hosts.txt
-    Write-Output "Writing to System Host File...." -ForegroundColor White -BackgroundColor Black
+    Write-Host "Writing to System Host File...." -ForegroundColor White -BackgroundColor Black
     Try {
         Write-Output "" | Out-File -Encoding ASCII $hosts_file
         Get-Content $PSScriptRoot/Files/hosts.txt | Out-File -Encoding ASCII -Append $hosts_file
-        Write-Output "Write Successful.." -ForegroundColor Green -BackgroundColor Black
+        Write-Host "Write Successful.." -ForegroundColor Green -BackgroundColor Black
     }
     Catch {
-        Write-Output "Error writing to System Host File...." -ForegroundColor Red -BackgroundColor Black
+        Write-Host "Error writing to System Host File...." -ForegroundColor Red -BackgroundColor Black
     }    
 }
 Else {
@@ -56,26 +40,26 @@ Else {
     If ($HTTP_Status2 -eq 200) {
         Write-Host "Repo Access is Available. Downloading Latest Host File" -ForegroundColor White -BackgroundColor Black
         Invoke-WebRequest -Uri "http://sbc.io/hosts/hosts" -OutFile $PSScriptRoot/Files/hosts.txt
-        Write-Output "Writing to System Host File...." -ForegroundColor White -BackgroundColor Black
+        Write-Host "Writing to System Host File...." -ForegroundColor White -BackgroundColor Black
         Try {
             Write-Output "" | Out-File -Encoding ASCII $hosts_file
             Get-Content $PSScriptRoot/Files/hosts.txt | Out-File -Encoding ASCII -Append $hosts_file
-            Write-Output "Write Successful.." -ForegroundColor Green -BackgroundColor Black
+            Write-Host "Write Successful.." -ForegroundColor Green -BackgroundColor Black
         }
         Catch {
-            Write-Output "Error writing to System Host File...." -ForegroundColor Red -BackgroundColor Black
+            Write-Host "Error writing to System Host File...." -ForegroundColor Red -BackgroundColor Black
         }        
     }
     Else {
         Write-Host "Unable to download host file. Please check your internet and proxy settings...." -ForegroundColor Red -BackgroundColor Black
-        Write-Host "Continuing with Local Copy..." -ForegroundColor White -BackgroundColor Black
+        Write-Host "Continuing with Local Copy..." -ForegroundColor Orange -BackgroundColor Black
         Try {
             Write-Output "" | Out-File -Encoding ASCII $hosts_file
             Get-Content $PSScriptRoot/Files/hosts.txt | Out-File -Encoding ASCII -Append $hosts_file
-            Write-Output "Write Successful.." -ForegroundColor Green -BackgroundColor Black
+            Write-Host "Write Successful.." -ForegroundColor Green -BackgroundColor Black
         }
         Catch {
-            Write-Output "Error writing to System Host File...." -ForegroundColor Red -BackgroundColor Black
+            Write-Host "Error writing to System Host File...." -ForegroundColor Red -BackgroundColor Black
         } 
     }
     # Finally, we clean up the http request by closing it.
@@ -83,5 +67,5 @@ Else {
     Else { $HTTP_Response.Close() }
 }
 # Finally, we clean up the http request by closing it.
-If ($null -eq $HTTP_Response) { } 
-Else { $HTTP_Response.Close() }
+If ($null -eq $HTTP_Response2) { } 
+Else { $HTTP_Response2.Close() }
