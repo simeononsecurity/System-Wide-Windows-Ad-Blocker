@@ -34,9 +34,9 @@ Else {
     # First we create the request.
     $HTTP_Request2 = [System.Net.WebRequest]::Create('http://sbc.io/hosts/hosts')
     # We then get a response from the site.
-    $HTTP_Response2 = $HTTP_Request.GetResponse()
+    $HTTP_Response2 = $HTTP_Request2.GetResponse()
     # We then get the HTTP code as an integer.
-    $HTTP_Status2 = [int]$HTTP_Response.StatusCode
+    $HTTP_Status2 = [int]$HTTP_Response2.StatusCode
     If ($HTTP_Status2 -eq 200) {
         Write-Host "Repo Access is Available. Downloading Latest Host File" -ForegroundColor White -BackgroundColor Black
         Invoke-WebRequest -Uri "http://sbc.io/hosts/hosts" -OutFile $PSScriptRoot/Files/hosts.txt
