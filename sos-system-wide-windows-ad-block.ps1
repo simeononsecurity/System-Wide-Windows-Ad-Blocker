@@ -1,3 +1,13 @@
+#Continue on error
+$ErrorActionPreference = 'silentlycontinue'
+
+#Require elivation for script run
+Write-Output "Elevating priviledges for this process"
+do {} until (Elevate-Privileges SeTakeOwnershipPrivilege)
+
+#Set Directory to PSScriptRoot
+if ((Get-Location).Path -NE $PSScriptRoot) { Set-Location $PSScriptRoot }
+
 Write-Host "Implementing simeononsecurity/System-Wide-Windows-Ad-Blocker" -ForegroundColor Green -BackgroundColor Black
 Write-Host "https://github.com/simeononsecurity/System-Wide-Windows-Ad-Blocker" -ForegroundColor Green -BackgroundColor Black
 
