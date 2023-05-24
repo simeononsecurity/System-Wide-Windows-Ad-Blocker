@@ -1,81 +1,65 @@
-#Continue on error
-$ErrorActionPreference = 'silentlycontinue'
+# Set error action preference to silently continue
+$ErrorActionPreference = 'SilentlyContinue'
 
-#Require elivation for script run
-Write-Output "Elevating priviledges for this process"
+# Elevate privileges for the script
+Write-Output "Elevating privileges for this process"
 do {} until (Elevate-Privileges SeTakeOwnershipPrivilege)
 
-#Set Directory to PSScriptRoot
-if ((Get-Location).Path -NE $PSScriptRoot) { Set-Location $PSScriptRoot }
+# Set the current directory to the script's root directory
+$scriptRoot = Split-Path -Path $MyInvocation.MyCommand.Path -Parent
+Set-Location -Path $scriptRoot
 
+# Output information about the ad blocker project
 Write-Host "Implementing simeononsecurity/System-Wide-Windows-Ad-Blocker" -ForegroundColor Green -BackgroundColor Black
 Write-Host "https://github.com/simeononsecurity/System-Wide-Windows-Ad-Blocker" -ForegroundColor Green -BackgroundColor Black
 
-#Specify host file location
-$hosts_file = "$env:systemroot\System32\drivers\etc\hosts"
+# Specify the hosts file location
+$hostsFilePath = "$env:SystemRoot\System32\drivers\etc\hosts"
 
-#Use only latest .Net 
-New-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\.NETFramework" -Name "OnlyUseLatestCLR" -PropertyType "DWORD" -Value "1" -Force
-New-ItemProperty -Path "HKLM:\SOFTWARE\Wow6432Node\Microsoft\.NETFramework" -Name "OnlyUseLatestCLR" -PropertyType "DWORD" -Value "1" -Force
+# Use only the latest .NET version
+$regPath1 = "HKLM:\SOFTWARE\Microsoft\.NETFramework"
+$regPath2 = "HKLM:\SOFTWARE\Wow6432Node\Microsoft\.NETFramework"
+New-ItemProperty -Path $regPath1 -Name "OnlyUseLatestCLR" -PropertyType DWORD -Value 1 -Force
+New-ItemProperty -Path $regPath2 -Name "OnlyUseLatestCLR" -PropertyType DWORD -Value 1 -Force
 
 # Download the StevenBlack/hosts file
-# Test if web access to the repo is available, if so download latest version of config
-# First we create the request.
-$HTTP_Request = [System.Net.WebRequest]::Create('https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts')
-# We then get a response from the site.
-$HTTP_Response = $HTTP_Request.GetResponse()
-# We then get the HTTP code as an integer.
-$HTTP_Status = [int]$HTTP_Response.StatusCode
-If ($HTTP_Status -eq 200) {
+$repoUrl1 = 'https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts'
+$repoUrl2 = 'http://sbc.io/hosts/hosts'
+
+# Test if web access to the repo is available, if so download the latest version of the hosts file
+$webRequest1 = [System.Net.WebRequest]::Create($repoUrl1)
+$webResponse1 = $webRequest1.GetResponse()
+$httpStatus1 = [int]$webResponse1.StatusCode
+
+$webRequest2 = [System.Net.WebRequest]::Create($repoUrl2)
+$webResponse2 = $webRequest2.GetResponse()
+$httpStatus2 = [int]$webResponse2.StatusCode
+
+if ($httpStatus1 -eq 200) {
     Write-Host "Repo Access is Available. Downloading Latest Host File" -ForegroundColor White -BackgroundColor Black
-    Invoke-WebRequest -Uri "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts" -OutFile $PSScriptRoot/Files/hosts.txt
+    Invoke-WebRequest -Uri $repoUrl1 -OutFile "$scriptRoot\Files\hosts.txt"
     Write-Host "Writing to System Host File...." -ForegroundColor White -BackgroundColor Black
-    Try {
-        Write-Output "" | Out-File -Encoding ASCII $hosts_file
-        Get-Content $PSScriptRoot/Files/hosts.txt | Out-File -Encoding ASCII -Append $hosts_file
+
+    try {
+        Set-Content -Path $hostsFilePath -Value "" -Encoding ASCII
+        Get-Content -Path "$scriptRoot\Files\hosts.txt" | Add-Content -Path $hostsFilePath -Encoding ASCII
         Write-Host "Write Successful.." -ForegroundColor Green -BackgroundColor Black
     }
-    Catch {
+    catch {
         Write-Host "Error writing to System Host File...." -ForegroundColor Red -BackgroundColor Black
-    }    
-}
-Else {
-    # Test if web access to the repo is available, if so download latest version of config
-    # First we create the request.
-    $HTTP_Request2 = [System.Net.WebRequest]::Create('http://sbc.io/hosts/hosts')
-    # We then get a response from the site.
-    $HTTP_Response2 = $HTTP_Request2.GetResponse()
-    # We then get the HTTP code as an integer.
-    $HTTP_Status2 = [int]$HTTP_Response2.StatusCode
-    If ($HTTP_Status2 -eq 200) {
-        Write-Host "Repo Access is Available. Downloading Latest Host File" -ForegroundColor White -BackgroundColor Black
-        Invoke-WebRequest -Uri "http://sbc.io/hosts/hosts" -OutFile $PSScriptRoot/Files/hosts.txt
-        Write-Host "Writing to System Host File...." -ForegroundColor White -BackgroundColor Black
-        Try {
-            Write-Output "" | Out-File -Encoding ASCII $hosts_file
-            Get-Content $PSScriptRoot/Files/hosts.txt | Out-File -Encoding ASCII -Append $hosts_file
-            Write-Host "Write Successful.." -ForegroundColor Green -BackgroundColor Black
-        }
-        Catch {
-            Write-Host "Error writing to System Host File...." -ForegroundColor Red -BackgroundColor Black
-        }        
     }
-    Else {
-        Write-Host "Unable to download host file. Please check your internet and proxy settings...." -ForegroundColor Red -BackgroundColor Black
-        Write-Host "Continuing with Local Copy..." -ForegroundColor Orange -BackgroundColor Black
-        Try {
-            Write-Output "" | Out-File -Encoding ASCII $hosts_file
-            Get-Content $PSScriptRoot/Files/hosts.txt | Out-File -Encoding ASCII -Append $hosts_file
-            Write-Host "Write Successful.." -ForegroundColor Green -BackgroundColor Black
-        }
-        Catch {
-            Write-Host "Error writing to System Host File...." -ForegroundColor Red -BackgroundColor Black
-        } 
-    }
-    # Finally, we clean up the http request by closing it.
-    If ($null -eq $HTTP_Response) { } 
-    Else { $HTTP_Response.Close() }
 }
-# Finally, we clean up the http request by closing it.
-If ($null -eq $HTTP_Response2) { } 
-Else { $HTTP_Response2.Close() }
+elseif ($httpStatus2 -eq 200) {
+    Write-Host "Repo Access is Available. Downloading Latest Host File" -ForegroundColor White -BackgroundColor Black
+    Invoke-WebRequest -Uri $repoUrl2 -OutFile "$scriptRoot\Files\hosts.txt"
+    Write-Host "Writing to System Host File...." -ForegroundColor White -BackgroundColor Black
+
+    try {
+        Set-Content -Path $hostsFilePath -Value "" -Encoding ASCII
+        Get-Content -Path "$scriptRoot\Files\hosts.txt" | Add-Content -Path $hostsFilePath -Encoding ASCII
+        Write-Host "Write Successful.." -ForegroundColor Green -BackgroundColor Black
+    }
+    catch {
+        Write-Host "Error writing to System Host File...." -ForegroundColor Red -BackgroundColor Black
+    }
+}
