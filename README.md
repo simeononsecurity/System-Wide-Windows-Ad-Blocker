@@ -21,3 +21,4 @@ Run the latest version of the script automatically:
 iwr -useb 'https://simeononsecurity.ch/scripts/soswindowsadblocker.ps1' | iex
 ```
 
+## Learn more about [Blocking Windows Ads and Trackers](https://simeononsecurity.ch/github/System-Wide-Windows-Ad-Blocker)
