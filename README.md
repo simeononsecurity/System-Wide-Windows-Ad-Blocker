@@ -6,6 +6,10 @@ This script is a Windows PowerShell script that downloads and applies the "Steve
 
 *We are seeking all comments and concerns for this repo. Please submit an [issue](https://github.com/simeononsecurity/System-Wide-Windows-Ad-Blocker/issues) with any information you might have.*
 
+## Known Issues
+We've so far been unable to replicate the issue, but on some systems a issue occurs from the hosts file being too large. This causes windows to be unable to resolve any domain at all.
+We suspect this is caused by low spec system performance. If this is you, please revert the changes with the guide above and subit an issue.
+
 ### Lists Used:
 - [StevenBlack/hosts - adware + malware](https://github.com/StevenBlack/hosts)
 
@@ -20,15 +24,17 @@ Run the latest version of the script automatically:
 ```powershell
 iwr -useb 'https://simeononsecurity.ch/scripts/soswindowsadblocker.ps1' | iex
 ```
+#### Removal
+https://github.com/simeononsecurity/System-Wide-Windows-Ad-Blocker/issues/1
 
 ## Learn more about [Blocking Windows Ads and Trackers](https://simeononsecurity.ch/github/System-Wide-Windows-Ad-Blocker)
-<a href="https://simeononsecurity.ch" target="_blank" rel="noopener noreferrer">
+<a href="https://simeononsecurity.com" target="_blank" rel="noopener noreferrer">
   <h2>Explore the World of Cybersecurity</h2>
 </a>
-<a href="https://simeononsecurity.ch" target="_blank" rel="noopener noreferrer">
-  <img src="https://simeononsecurity.ch/img/banner.png" alt="SimeonOnSecurity Logo" width="300" height="300">
+<a href="https://simeononsecurity.com" target="_blank" rel="noopener noreferrer">
+  <img src="https://simeononsecurity.com/img/banner.png" alt="SimeonOnSecurity Logo" width="300" height="300">
 </a>
 
 ### Links:
 - #### [github.com/simeononsecurity](https://github.com/simeononsecurity)
-- #### [simeononsecurity.ch](https://simeononsecurity.ch)
+- #### [simeononsecurity.com](https://simeononsecurity.com)
