@@ -8,7 +8,7 @@ This script is a Windows PowerShell script that downloads and applies the "Steve
 
 ## Known Issues
 We've so far been unable to replicate the issue, but on some systems a issue occurs from the hosts file being too large. This causes windows to be unable to resolve any domain at all.
-We suspect this is caused by low spec system performance. If this is you, please revert the changes with the guide above and subit an issue.
+We suspect this is caused by low spec system performance. If this is you, please revert the changes with the guide below and submit an issue.
 
 ### Lists Used:
 - [StevenBlack/hosts - adware + malware](https://github.com/StevenBlack/hosts)
