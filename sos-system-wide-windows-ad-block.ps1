@@ -63,3 +63,29 @@ elseif ($httpStatus2 -eq 200) {
         Write-Host "Error writing to System Host File...." -ForegroundColor Red -BackgroundColor Black
     }
 }
+
+$hostsFilePath = "$env:SystemRoot\System32\drivers\etc\hosts"
+$hostsFileSize = (Get-Item $hostsFilePath).Length
+
+if ($hostsFileSize -gt 135KB) {
+    Write-Host "The hosts file size is greater than 135KB."
+
+    # Option 1: Modify DNS Client service
+    #Write-Host "Modifying DNS Client service..."
+    #Set-Service -Name Dnscache -StartupType Manual
+    #Restart-Service -Name Dnscache
+    #Write-Host "DNS Client service modified and restarted."
+
+    # Option 2: Flush DNS cache
+    Write-Host "Flushing DNS cache..."
+    Stop-Service -Name Dnscache
+    Remove-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters" -Name MaxCacheTtl -ErrorAction SilentlyContinue
+    Remove-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters" -Name MaxNegativeCacheTtl -ErrorAction SilentlyContinue
+    New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters" -Name MaxCacheTtl -Value 1 -PropertyType DWORD
+    Restart-Service -Name Dnscache
+    Write-Host "DNS cache flushed and service restarted."
+}
+else {
+    Write-Host "The hosts file size is within the acceptable range."
+}
+
