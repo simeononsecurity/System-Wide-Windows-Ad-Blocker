@@ -1,40 +1,45 @@
-# System-Wide-Windows-Ad-Blocker
+# System-Wide Windows Ad Blocker
 
-[![Sponsor](https://img.shields.io/badge/Sponsor-Click%20Here-ff69b4)](https://github.com/sponsors/simeononsecurity) [![VirusTotal Scan](https://github.com/simeononsecurity/System-Wide-Windows-Ad-Blocker/actions/workflows/virustotal.yml/badge.svg)](https://github.com/simeononsecurity/System-Wide-Windows-Ad-Blocker/actions/workflows/virustotal.yml)
+Apply a validated StevenBlack hosts list inside a managed section of the Windows hosts file. Preserve existing custom mappings and retain an exact original backup.
 
-This script is a Windows PowerShell script that downloads and applies the "StevenBlack/hosts" file to the system's "hosts" file, which can be used to block certain domains/websites by mapping them to an IP address of your choice (usually the IP address of the local machine). The script checks the internet connection and proxy settings, and tries downloading the latest version of the "hosts" file from two different sources: "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts" and "http://sbc.io/hosts/hosts". If the download fails, the script continues with a local copy of the "hosts" file. The script requires elevated privileges to run and modifies the ".NETFramework" registry key to use only the latest version of the .NET framework.
+## Requirements
 
-*We are seeking all comments and concerns for this repo. Please submit an [issue](https://github.com/simeononsecurity/System-Wide-Windows-Ad-Blocker/issues) with any information you might have.*
+Run from an elevated Windows PowerShell 5.1 or PowerShell 7 terminal. Extract the repository before execution. Test DNS resolution and required applications on a disposable Windows system before deployment.
 
-## Known Issues
-We've so far been unable to replicate the issue, but on some systems a issue occurs from the hosts file being too large. This causes windows to be unable to resolve any domain at all.
-We suspect this is caused by low spec system performance. If this is you, please revert the changes with the guide below and submit an issue.
+## Apply or preview
 
-### Lists Used:
-- [StevenBlack/hosts - adware + malware](https://github.com/StevenBlack/hosts)
-
-### Example:
-#### Manual install:
-**The script may be launched from the extracted GitHub download like this:**
 ```powershell
+.\sos-system-wide-windows-ad-block.ps1 -WhatIf
 .\sos-system-wide-windows-ad-block.ps1
 ```
-#### Automated install:
-Run the latest version of the script automatically:
+
+The default list uses HTTPS. Redirects are rejected. Empty lists, malformed records, invalid domain syntax, and records directing blocked domains to non-loopback addresses are rejected before file changes. Localhost records are ignored. DNS names containing underscores are accepted because upstream includes them.
+
+For a reviewed offline list:
+
 ```powershell
-iwr -useb 'https://simeononsecurity.ch/scripts/soswindowsadblocker.ps1' | iex
+.\sos-system-wide-windows-ad-block.ps1 -ListPath C:\Downloads\hosts.txt
 ```
-#### Removal
-https://github.com/simeononsecurity/System-Wide-Windows-Ad-Blocker/issues/1
 
-## Learn more about [Blocking Windows Ads and Trackers](https://simeononsecurity.ch/github/System-Wide-Windows-Ad-Blocker)
-<a href="https://simeononsecurity.com" target="_blank" rel="noopener noreferrer">
-  <h2>Explore the World of Cybersecurity</h2>
-</a>
-<a href="https://simeononsecurity.com" target="_blank" rel="noopener noreferrer">
-  <img src="https://simeononsecurity.com/img/banner.png" alt="SimeonOnSecurity Logo" width="300" height="300">
-</a>
+Custom mappings outside `BEGIN SOS AD BLOCKER` and `END SOS AD BLOCKER` remain intact and take precedence over list entries. Updates replace only the managed section. No DNS service or .NET registry changes are applied. Hosts files must use ASCII or UTF-8.
 
-### Links:
-- #### [github.com/simeononsecurity](https://github.com/simeononsecurity)
-- #### [simeononsecurity.com](https://simeononsecurity.com)
+The default backup is `%ProgramData%\SoS-Hosts\backup.json`. Use `-BackupPath` to select another local location and reuse the same path for updates and restoration. Backups contain original bytes and integrity hashes. Keep them protected.
+
+## Restore
+
+```powershell
+.\sos-system-wide-windows-ad-block.ps1 -Mode Restore -WhatIf
+.\sos-system-wide-windows-ad-block.ps1 -Mode Restore
+```
+
+Restore recovers the exact original file, including its line endings. If another application or user changed the hosts file after application, the script stops instead of discarding those edits. Preserve and reconcile edits before retrying. The backup is removed only after successful restoration.
+
+Earlier versions overwrote the full hosts file. This release cannot recover custom entries already lost by an earlier installation. Use a pre-existing backup for those entries.
+
+## Tests
+
+```powershell
+pwsh -NoProfile -File tests/Regression.ps1
+```
+
+Tests use temporary files, never the system hosts file. They cover custom mappings, repeated updates, original-byte recovery, WhatIf, invalid input, HTTP rejection, and the bundled upstream-format list. CI runs Windows PowerShell 5.1 and PowerShell 7. Native DNS behavior and large-list performance require separate Windows acceptance tests.
