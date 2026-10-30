@@ -170,7 +170,7 @@ function Invoke-HostsBlocker {
     $HostsPath = [IO.Path]::GetFullPath($HostsPath)
     $BackupPath = [IO.Path]::GetFullPath($BackupPath)
     if ($HostsPath -eq $BackupPath) { throw 'Backup path must differ from hosts path.' }
-    if ((Get-Item -LiteralPath $HostsPath).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Hosts symlinks are not supported.' }
+    if ((Get-Item -Force -LiteralPath $HostsPath).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Hosts symlinks are not supported.' }
     $original = Read-FileBytesWithRetry -Path $HostsPath -Operation 'read hosts file at'
     $saved = $null
     if (Test-Path -LiteralPath $BackupPath) {
