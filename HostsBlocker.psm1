@@ -34,6 +34,30 @@ function ConvertTo-BlockEntries([string]$Text) {
     return @($entries)
 }
 
+function Compress-BlockEntries([string[]]$Entries) {
+    # Match the upstream hosts generator's Windows-oriented format: keep at
+    # most nine domain aliases on each mapping line. Domain validation in
+    # ConvertTo-BlockEntries bounds each alias to 253 characters, so line
+    # length is bounded while the number of lines drops substantially.
+    $line = '0.0.0.0'
+    $aliasCount = 0
+    foreach ($entry in $Entries) {
+        $separator = $entry.IndexOf(' ')
+        if ($separator -lt 1 -or $entry.Substring(0, $separator) -ne '0.0.0.0') {
+            throw 'Block entry had an unexpected format during compression.'
+        }
+        $domain = $entry.Substring($separator + 1)
+        if ($aliasCount -ge 9) {
+            Write-Output $line
+            $line = '0.0.0.0'
+            $aliasCount = 0
+        }
+        $line += ' ' + $domain
+        $aliasCount++
+    }
+    if ($aliasCount -gt 0) { Write-Output $line }
+}
+
 function Write-AtomicBytes([string]$Path, [byte[]]$Bytes) {
     $temp = $Path + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
     try {
@@ -74,7 +98,7 @@ function Invoke-FileOperationWithRetry {
                 continue
             }
             if ($win32Code -in @(32, 33)) {
-                $detail = 'Windows reported a sharing or lock violation. Another process or security product may hold an exclusive lock.'
+                $detail = 'Windows reported a sharing or lock violation. Another process or security product may have the file open without sharing write access.'
             } else {
                 $detail = 'Windows reported access denied. Check permissions, file attributes, and whether another process or security product holds an exclusive lock.'
             }
@@ -233,7 +257,8 @@ function Invoke-HostsBlocker {
         if ($parts.Count -ge 2) { foreach ($domain in $parts[1..($parts.Count-1)]) { $custom[$domain] = $true } }
     }
     $entries = @($entries | Where-Object { -not $custom.ContainsKey(($_ -split ' ')[1]) })
-    $newText = $text + $script:Begin + $newline + ($entries -join $newline) + $newline + $script:End + $newline
+    $compressedEntries = @(Compress-BlockEntries -Entries $entries)
+    $newText = $text + $script:Begin + $newline + ($compressedEntries -join $newline) + $newline + $script:End + $newline
     $newBytes = $utf8.GetBytes($newText)
     if (-not $saved) {
         $saved = [pscustomobject]@{ Version = 1; HostsPath = $HostsPath; Original = [Convert]::ToBase64String($original); OriginalHash = (Get-BytesHash $original); AppliedHash = ''; PreviousHash = '' }

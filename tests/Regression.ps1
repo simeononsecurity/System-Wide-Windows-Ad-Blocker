@@ -40,6 +40,15 @@ try {
         } $attempts
         Assert ($attemptCount -eq 2) 'Transient sharing violation was not retried'
 
+        # A concurrent reader that explicitly shares writes should not prevent
+        # the restore from opening and updating the same file.
+        Invoke-HostsBlocker -HostsPath $hosts -BackupPath $backup -ListPath $list
+        $sharedRead = [IO.File]::Open($hosts, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+        try { Invoke-HostsBlocker -HostsPath $hosts -BackupPath $backup -Mode Restore }
+        finally { $sharedRead.Dispose() }
+        Assert ([Convert]::ToBase64String([IO.File]::ReadAllBytes($hosts)) -eq [Convert]::ToBase64String($initial)) 'Restore failed with an existing reader that shares writes'
+        Assert (-not (Test-Path -LiteralPath $backup)) 'Restore with a compatible reader retained the verified backup'
+
         # A locked hosts file must produce a useful error and leave recovery data intact.
         Invoke-HostsBlocker -HostsPath $hosts -BackupPath $backup -ListPath $list
         $lockedBytes = [IO.File]::ReadAllBytes($hosts)
@@ -51,7 +60,7 @@ try {
             $lockMessage = ''
             try { Invoke-HostsBlocker -HostsPath $hosts -BackupPath $backup -Mode Restore }
             catch { $lockMessage = $_.Exception.Message }
-            Assert ($lockMessage -match 'exclusive lock') 'Locked restore did not explain the possible exclusive lock'
+            Assert ($lockMessage -match 'without sharing write access') 'Locked restore did not explain the incompatible sharing mode'
             Assert (Test-Path -LiteralPath $backup) 'Locked restore removed its recovery backup'
             Assert ([IO.File]::ReadAllText($backup) -eq $backupJson) 'Locked restore changed its recovery backup'
         } finally { $lock.Dispose() }
@@ -87,8 +96,34 @@ try {
         Assert (-not (Test-Path $backup)) 'Invalid input created backup'
     }
     Throws { Invoke-HostsBlocker -HostsPath $hosts -BackupPath $backup -ListUri 'http://example.com/list' }
-    # Validate the actual bundled upstream-format list without changing any system file.
-    $entries = @(ConvertTo-BlockEntries ([IO.File]::ReadAllText((Join-Path $PSScriptRoot '../Files/hosts.txt'))))
+    # Apply the full bundled list to an isolated temp file and prove compression
+    # still parses back to the exact complete domain set before restoring bytes.
+    $bundleText = [IO.File]::ReadAllText((Join-Path $PSScriptRoot '../Files/hosts.txt'))
+    $entries = @(ConvertTo-BlockEntries $bundleText)
     Assert ($entries.Count -gt 1000) 'Bundled upstream fixture did not parse'
-    Write-Output 'PASS: hosts isolation, custom mappings, update, exact restore, WhatIf and malformed input'
+    $largeHosts = Join-Path $root 'large-hosts'
+    $largeBackup = Join-Path $root 'large-backup.json'
+    $largeList = Join-Path $root 'large-list.txt'
+    $largeInitial = [Text.Encoding]::UTF8.GetBytes("127.0.0.1 localhost`r`n")
+    [IO.File]::WriteAllBytes($largeHosts, $largeInitial)
+    [IO.File]::WriteAllText($largeList, $bundleText)
+    Invoke-HostsBlocker -HostsPath $largeHosts -BackupPath $largeBackup -ListPath $largeList
+    $appliedText = [IO.File]::ReadAllText($largeHosts)
+    $managedBlock = [regex]::Match($appliedText, '(?ms)^# BEGIN SOS AD BLOCKER\r?\n(.*?)^# END SOS AD BLOCKER(?:\r?\n|$)')
+    Assert $managedBlock.Success 'Full-list Apply did not create a complete managed block'
+    $appliedEntries = @(ConvertTo-BlockEntries $managedBlock.Groups[1].Value)
+    Assert ($appliedEntries.Count -eq $entries.Count) 'Compressed full-list Apply lost one or more domains'
+    Assert (($appliedEntries -join "`n") -eq ($entries -join "`n")) 'Compressed full-list Apply changed the bundled domain set'
+    $mappingLines = @($managedBlock.Groups[1].Value -split '\r?\n' | Where-Object { $_ })
+    $maxAliases = 0
+    foreach ($mappingLine in $mappingLines) {
+        $aliasCount = (($mappingLine -split '\s+').Count - 1)
+        if ($aliasCount -gt $maxAliases) { $maxAliases = $aliasCount }
+    }
+    Assert ($maxAliases -le 9) 'Compressed host line exceeded the nine-alias limit'
+    Assert ($mappingLines.Count -lt $entries.Count) 'Full-list Apply did not reduce hosts mapping line count'
+    Invoke-HostsBlocker -HostsPath $largeHosts -BackupPath $largeBackup -Mode Restore
+    Assert ([Convert]::ToBase64String([IO.File]::ReadAllBytes($largeHosts)) -eq [Convert]::ToBase64String($largeInitial)) 'Full-list compressed Apply did not restore exact original bytes'
+    Assert (-not (Test-Path -LiteralPath $largeBackup)) 'Full-list exact restore retained its verified backup'
+    Write-Output 'PASS: isolated hosts updates, compressed full-list coverage, exact restore, WhatIf, sharing and malformed input'
 } finally { Remove-Item -LiteralPath $root -Recurse -Force }
