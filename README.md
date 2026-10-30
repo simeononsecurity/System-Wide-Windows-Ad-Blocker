@@ -23,6 +23,8 @@ For a reviewed offline list:
 
 Custom mappings outside `BEGIN SOS AD BLOCKER` and `END SOS AD BLOCKER` remain intact and take precedence over list entries. Updates replace only the managed section. No DNS service or .NET registry changes are applied. Hosts files must use ASCII or UTF-8.
 
+Managed block entries are compressed into mapping lines with no more than nine domains per line, following the upstream list generator's Windows-oriented format. Compression reduces the number of lines while keeping every validated block-list domain.
+
 The default backup is `%ProgramData%\SoS-Hosts\backup.json`. Use `-BackupPath` to select another local location and reuse the same path for updates and restoration. Backups contain original bytes and integrity hashes. Keep them protected.
 
 ## Restore
@@ -44,4 +46,12 @@ Earlier versions overwrote the full hosts file. This release cannot recover cust
 pwsh -NoProfile -File tests/Regression.ps1
 ```
 
-Tests use temporary files, never the system hosts file. They cover custom mappings, repeated updates, original-byte recovery, WhatIf, invalid input, HTTP rejection, and the bundled upstream-format list. CI runs Windows PowerShell 5.1 and PowerShell 7. Native DNS behavior and large-list performance require separate Windows acceptance tests.
+The regression suite uses temporary files, never the system hosts file. It covers custom mappings, repeated updates, original-byte recovery, WhatIf, invalid input, HTTP rejection, and the bundled upstream-format list. CI runs Windows PowerShell 5.1 and PowerShell 7. Large-list performance still requires separate Windows acceptance testing.
+
+## Windows DNS integration test
+
+The `Windows DNS integration` workflow applies the complete bundled list on a fresh GitHub-hosted Windows VM and verifies that the compressed managed section expands back to the complete effective domain set. It then checks several block-list domains and four explicit non-blocklisted controls (`example.com`, `github.com`, `iana.org`, and `www.microsoft.com`) with `.NET System.Net.Dns.GetHostAddresses` (the Windows OS resolver, which honors the hosts file). It verifies each control's A record before, during, and after Apply/Restore, records returned A/AAAA addresses and elapsed time, and probes direct UDP A and optional AAAA records for baseline and failure diagnosis. The direct probe bypasses Windows DnsClient so a Windows resolver stall can be distinguished from external DNS failure. It records read-only Dnscache service-host CPU, memory, thread, and handle counts when available; these process metrics do not identify which process owns a particular file handle. Any CNAME targets returned for controls are checked against the installed list. It flushes the DNS client cache with bounded `ipconfig /flushdns` processes, restores the original hosts bytes and attributes in `finally`, verifies that recovery, and checks the sample domains again. A bounded block-list sample avoids coupling the assertion to domains that no longer have public DNS records; AAAA answers are observed but not required for network reachability.
+
+This test changes only the disposable hosted runner. A guard prevents it from running on a developer machine or self-hosted runner. It uploads a seven-day log artifact. Exit code 1 indicates a script or harness regression; exit code 2 indicates an external DNS/network preflight or resolver environment failure, so that condition is distinguishable from the script assertions. The test exercises normal Windows file sharing and the runner's DNS client; it does not simulate third-party antivirus/minifilter locks or desktop-machine policy.
+
+Windows containers are not used for this check: their container filesystem and network endpoint are isolated, so the script would modify the container's hosts file and use container DNS settings rather than the disposable Windows runner's hosts file and DNS client. Binding the host hosts file into a container would defeat the isolation requirement. The GitHub-hosted `windows-latest` VM is the safe environment for this end-to-end check.
