@@ -3,6 +3,7 @@
 param(
     [switch]$ResolveName,
     [switch]$DnsProbe,
+    [switch]$DnsTelemetry,
     [switch]$EmergencyRestore
 )
 
@@ -164,6 +165,23 @@ if ($DnsProbe) {
     } catch {
         [Console]::Error.WriteLine('Direct DNS health query failed.')
         exit 2
+    }
+}
+
+if ($DnsTelemetry) {
+    try {
+        $service = Get-CimInstance -ClassName Win32_Service -Filter "Name='Dnscache'" -ErrorAction Stop
+        if (-not $service -or -not $service.ProcessId) {
+            [Console]::Out.WriteLine('STATUS=Unavailable;REASON=Dnscache service process is not running.')
+            exit 0
+        }
+        $process = Get-Process -Id $service.ProcessId -ErrorAction Stop
+        $cpuSeconds = if ($null -eq $process.CPU) { 'unavailable' } else { [string]::Format([System.Globalization.CultureInfo]::InvariantCulture, '{0:F3}', $process.CPU) }
+        [Console]::Out.WriteLine(('STATUS=OK;SERVICE_STATE={0};PID={1};CPU_SECONDS={2};WORKING_SET_BYTES={3};THREADS={4};HANDLES={5}' -f $service.State, $service.ProcessId, $cpuSeconds, $process.WorkingSet64, $process.Threads.Count, $process.HandleCount))
+        exit 0
+    } catch {
+        [Console]::Out.WriteLine('STATUS=Unavailable;REASON=Read-only Dnscache telemetry could not be collected.')
+        exit 0
     }
 }
 
@@ -339,6 +357,20 @@ function Invoke-OsResolver([string]$Name) {
     return [pscustomobject]@{ Status = 'Success'; Addresses = $addresses; DurationMilliseconds = $timer.ElapsedMilliseconds; QueryStarted = $queryStarted; Detail = '' }
 }
 
+function Invoke-DnsClientTelemetry([string]$Phase) {
+    $arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -DnsTelemetry' -f $script:HarnessPath
+    $timer = [Diagnostics.Stopwatch]::StartNew()
+    $result = Invoke-BoundedProcess -FileName $script:PowerShellPath -Arguments $arguments -TimeoutSeconds $script:ResolverTimeoutSeconds
+    $timer.Stop()
+    if ($result.TimedOut) {
+        Write-Log "Dnscache telemetry ($Phase): unavailable, collector timeout; elapsed-ms=$($timer.ElapsedMilliseconds)"
+        return
+    }
+    $telemetry = ($result.StdOut -split '\r?\n' | Where-Object { $_ -like 'STATUS=*' } | Select-Object -First 1)
+    if ($result.ExitCode -ne 0 -or -not $telemetry) { $telemetry = 'STATUS=Unavailable;REASON=Collector returned no data.' }
+    Write-Log "Dnscache telemetry ($Phase): $telemetry; elapsed-ms=$($timer.ElapsedMilliseconds)"
+}
+
 function Get-ConfiguredDnsServer {
     foreach ($adapter in [Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces()) {
         if ($adapter.OperationalStatus -ne [Net.NetworkInformation.OperationalStatus]::Up) { continue }
@@ -474,6 +506,7 @@ try {
     $dnsServer = Get-ConfiguredDnsServer
     if (-not $dnsServer) { Add-Failure 'ENVIRONMENT' 'No configured IPv4 DNS server was found for the baseline network check.' }
     else { Write-Log 'Baseline direct DNS health checks will use the configured IPv4 DNS server (address redacted from artifacts).' }
+    Invoke-DnsClientTelemetry -Phase 'baseline'
 
     foreach ($control in $controls) {
         $resolved = Invoke-OsResolver $control
@@ -572,6 +605,7 @@ try {
             }
 
             if (-not (Invoke-DnsFlush 'after Apply')) { Add-Failure 'ENVIRONMENT' 'DNS cache flush after Apply failed or timed out.' }
+            Invoke-DnsClientTelemetry -Phase 'after Apply'
             $blockedResolverFailures = New-Object 'System.Collections.Generic.List[string]'
             foreach ($domain in $blockedSample) {
                 $resolved = Invoke-OsResolver $domain
@@ -595,6 +629,7 @@ try {
                     Add-Failure 'SCRIPT' "Apply unexpectedly blocked control domain '$control'."
                 }
             }
+            Invoke-DnsClientTelemetry -Phase 'after Apply resolver probes'
             foreach ($domain in $blockedResolverFailures) {
                 $direct = Invoke-DirectDnsProbe -Name $domain -Server $dnsServer
                 Write-DirectDnsResult -Phase 'after Apply' -Name $domain -RecordType 'A' -Result $direct
