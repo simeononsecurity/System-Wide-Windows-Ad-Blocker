@@ -40,6 +40,11 @@ function Read-DnsName([byte[]]$Packet, [int]$Offset, [ref]$NextOffset) {
     return ($labels -join '.')
 }
 
+function Write-QueryStartedMarker {
+    $markerPath = $env:SOS_DNS_E2E_QUERY_STARTED_MARKER
+    if ($markerPath) { [IO.File]::WriteAllText($markerPath, 'started', [Text.Encoding]::ASCII) }
+}
+
 # The resolver child is deliberately a separate Windows PowerShell process so
 # the parent can enforce a hard timeout around the OS hostname-resolution API.
 if ($ResolveName) {
@@ -49,6 +54,7 @@ if ($ResolveName) {
         exit 64
     }
     try {
+        Write-QueryStartedMarker
         $addresses = @([System.Net.Dns]::GetHostAddresses($name) | ForEach-Object { $_.IPAddressToString })
         if ($addresses.Count -eq 0) {
             [Console]::Error.WriteLine('The OS resolver returned no addresses.')
@@ -101,6 +107,7 @@ if ($DnsProbe) {
             $endpoint = [Net.IPEndPoint]::new([Net.IPAddress]::Parse($server), 53)
             $udp.Connect($endpoint)
             $null = $udp.Send($queryBytes, $queryBytes.Length)
+            Write-QueryStartedMarker
             $remoteEndpoint = [Net.IPEndPoint]::new([Net.IPAddress]::Any, 0)
             $response = $udp.Receive([ref]$remoteEndpoint)
         } finally { $udp.Dispose() }
@@ -229,7 +236,7 @@ $script:FlushTimeoutSeconds = 15
 
 function Write-Log([string]$Message) {
     $line = '[{0}] {1}' -f [DateTime]::UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'"), $Message
-    Write-Host $line
+    [Console]::Out.WriteLine($line)
     [IO.File]::AppendAllText($script:LogPath, $line + [Environment]::NewLine, [Text.Encoding]::UTF8)
 }
 
@@ -315,17 +322,21 @@ function Invoke-DnsFlush([string]$Phase) {
 function Invoke-OsResolver([string]$Name) {
     $timer = [Diagnostics.Stopwatch]::StartNew()
     $arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -ResolveName' -f $script:HarnessPath
-    $result = Invoke-BoundedProcess -FileName $script:PowerShellPath -Arguments $arguments -TimeoutSeconds $script:ResolverTimeoutSeconds -Environment @{ SOS_DNS_E2E_RESOLVE_NAME = $Name }
+    $markerPath = Join-Path $env:RUNNER_TEMP ('dns-query-started-' + [guid]::NewGuid().ToString('N') + '.txt')
+    $result = Invoke-BoundedProcess -FileName $script:PowerShellPath -Arguments $arguments -TimeoutSeconds $script:ResolverTimeoutSeconds -Environment @{ SOS_DNS_E2E_RESOLVE_NAME = $Name; SOS_DNS_E2E_QUERY_STARTED_MARKER = $markerPath }
     $timer.Stop()
+    $queryStarted = Test-Path -LiteralPath $markerPath -PathType Leaf
+    if ($queryStarted) { Remove-Item -LiteralPath $markerPath -Force }
     if ($result.TimedOut) {
-        return [pscustomobject]@{ Status = 'Timeout'; Addresses = @(); DurationMilliseconds = $timer.ElapsedMilliseconds; Detail = 'OS resolver exceeded the timeout.' }
+        $detail = if ($queryStarted) { 'OS resolver query started but exceeded the timeout.' } else { 'Resolver child did not reach query start before the deadline.' }
+        return [pscustomobject]@{ Status = 'Timeout'; Addresses = @(); DurationMilliseconds = $timer.ElapsedMilliseconds; QueryStarted = $queryStarted; Detail = $detail }
     }
     if ($result.ExitCode -ne 0) {
-        return [pscustomobject]@{ Status = 'Failure'; Addresses = @(); DurationMilliseconds = $timer.ElapsedMilliseconds; Detail = $result.StdErr.Trim() }
+        return [pscustomobject]@{ Status = 'Failure'; Addresses = @(); DurationMilliseconds = $timer.ElapsedMilliseconds; QueryStarted = $queryStarted; Detail = $result.StdErr.Trim() }
     }
     $addresses = @($result.StdOut.Trim() -split ',' | Where-Object { $_ })
-    if ($addresses.Count -eq 0) { return [pscustomobject]@{ Status = 'Failure'; Addresses = @(); DurationMilliseconds = $timer.ElapsedMilliseconds; Detail = 'OS resolver returned no address text.' } }
-    return [pscustomobject]@{ Status = 'Success'; Addresses = $addresses; DurationMilliseconds = $timer.ElapsedMilliseconds; Detail = '' }
+    if ($addresses.Count -eq 0) { return [pscustomobject]@{ Status = 'Failure'; Addresses = @(); DurationMilliseconds = $timer.ElapsedMilliseconds; QueryStarted = $queryStarted; Detail = 'OS resolver returned no address text.' } }
+    return [pscustomobject]@{ Status = 'Success'; Addresses = $addresses; DurationMilliseconds = $timer.ElapsedMilliseconds; QueryStarted = $queryStarted; Detail = '' }
 }
 
 function Get-ConfiguredDnsServer {
@@ -343,23 +354,30 @@ function Get-ConfiguredDnsServer {
 }
 
 function Invoke-DirectDnsProbe([string]$Name, [string]$Server, [ValidateSet('A','AAAA')][string]$RecordType = 'A') {
-    if (-not $Server) { return [pscustomobject]@{ Status = 'Unavailable'; Addresses = @(); CnameTargets = @(); DurationMilliseconds = 0; Detail = 'No configured IPv4 DNS server was found.' } }
+    if (-not $Server) { return [pscustomobject]@{ Status = 'Unavailable'; Addresses = @(); CnameTargets = @(); DurationMilliseconds = 0; QueryStarted = $false; Detail = 'No configured IPv4 DNS server was found.' } }
     $timer = [Diagnostics.Stopwatch]::StartNew()
     $arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -DnsProbe' -f $script:HarnessPath
+    $markerPath = Join-Path $env:RUNNER_TEMP ('dns-query-started-' + [guid]::NewGuid().ToString('N') + '.txt')
     $result = Invoke-BoundedProcess -FileName $script:PowerShellPath -Arguments $arguments -TimeoutSeconds $script:ResolverTimeoutSeconds -Environment @{
         SOS_DNS_E2E_RESOLVE_NAME = $Name
         SOS_DNS_E2E_DNS_SERVER = $Server
         SOS_DNS_E2E_RECORD_TYPE = $RecordType
+        SOS_DNS_E2E_QUERY_STARTED_MARKER = $markerPath
     }
     $timer.Stop()
-    if ($result.TimedOut) { return [pscustomobject]@{ Status = 'Timeout'; Addresses = @(); CnameTargets = @(); DurationMilliseconds = $timer.ElapsedMilliseconds; Detail = 'Direct DNS health probe exceeded the timeout.' } }
-    if ($result.ExitCode -ne 0) { return [pscustomobject]@{ Status = 'Failure'; Addresses = @(); CnameTargets = @(); DurationMilliseconds = $timer.ElapsedMilliseconds; Detail = $result.StdErr.Trim() } }
+    $queryStarted = Test-Path -LiteralPath $markerPath -PathType Leaf
+    if ($queryStarted) { Remove-Item -LiteralPath $markerPath -Force }
+    if ($result.TimedOut) {
+        $detail = if ($queryStarted) { 'Direct DNS packet was sent but its response exceeded the timeout.' } else { 'DNS probe child did not send the query before the deadline.' }
+        return [pscustomobject]@{ Status = 'Timeout'; Addresses = @(); CnameTargets = @(); DurationMilliseconds = $timer.ElapsedMilliseconds; QueryStarted = $queryStarted; Detail = $detail }
+    }
+    if ($result.ExitCode -ne 0) { return [pscustomobject]@{ Status = 'Failure'; Addresses = @(); CnameTargets = @(); DurationMilliseconds = $timer.ElapsedMilliseconds; QueryStarted = $queryStarted; Detail = $result.StdErr.Trim() } }
     $addressesLine = @($result.StdOut -split '\r?\n' | Where-Object { $_ -like 'ADDRESSES=*' } | Select-Object -First 1)
     $cnamesLine = @($result.StdOut -split '\r?\n' | Where-Object { $_ -like 'CNAMES=*' } | Select-Object -First 1)
     $addresses = if ($addressesLine.Count) { @($addressesLine[0].Substring(10) -split ',' | Where-Object { $_ }) } else { @() }
     $cnameTargets = if ($cnamesLine.Count -and $cnamesLine[0].Length -gt 7) { @($cnamesLine[0].Substring(7) -split ',' | Where-Object { $_ }) } else { @() }
-    if ($addresses.Count -eq 0) { return [pscustomobject]@{ Status = 'Failure'; Addresses = @(); CnameTargets = $cnameTargets; DurationMilliseconds = $timer.ElapsedMilliseconds; Detail = 'Direct DNS probe returned no address text.' } }
-    return [pscustomobject]@{ Status = 'Success'; Addresses = $addresses; CnameTargets = $cnameTargets; DurationMilliseconds = $timer.ElapsedMilliseconds; Detail = '' }
+    if ($addresses.Count -eq 0) { return [pscustomobject]@{ Status = 'Failure'; Addresses = @(); CnameTargets = $cnameTargets; DurationMilliseconds = $timer.ElapsedMilliseconds; QueryStarted = $queryStarted; Detail = 'Direct DNS probe returned no address text.' } }
+    return [pscustomobject]@{ Status = 'Success'; Addresses = $addresses; CnameTargets = $cnameTargets; DurationMilliseconds = $timer.ElapsedMilliseconds; QueryStarted = $queryStarted; Detail = '' }
 }
 
 function Test-UsableResolverAddresses([string[]]$Addresses) {
@@ -382,7 +400,7 @@ function Get-UsableResolverAddressGroups([string[]]$Addresses) {
 }
 
 function Write-DirectDnsResult([string]$Phase, [string]$Name, [string]$RecordType, $Result) {
-    Write-Log ("Direct DNS {0}: {1} {2} => status={3}, answers=[{4}], elapsed-ms={5}" -f $Phase, $Name, $RecordType, $Result.Status, ($Result.Addresses -join ','), $Result.DurationMilliseconds)
+    Write-Log ("Direct DNS {0}: {1} {2} => status={3}, answers=[{4}], query-started={5}, elapsed-ms={6} {7}" -f $Phase, $Name, $RecordType, $Result.Status, ($Result.Addresses -join ','), $Result.QueryStarted, $Result.DurationMilliseconds, $Result.Detail)
     if ($Result.CnameTargets.Count -gt 0) { Write-Log ("Direct DNS {0}: {1} CNAME targets=[{2}]" -f $Phase, $Name, ($Result.CnameTargets -join ',')) }
 }
 
@@ -390,7 +408,7 @@ function Write-ResolverResult([string]$Phase, [string]$Name, $Result) {
     $addressCount = $Result.Addresses.Count
     $groups = Get-UsableResolverAddressGroups $Result.Addresses
     $addressSummary = if ($Phase -match 'control') { "A=[$($groups.A -join ',')] AAAA=[$($groups.AAAA -join ',')]" } else { "address-count=$addressCount" }
-    Write-Log ("Resolver {0}: {1} => status={2}, {3}, elapsed-ms={4} {5}" -f $Phase, $Name, $Result.Status, $addressSummary, $Result.DurationMilliseconds, $Result.Detail)
+    Write-Log ("Resolver {0}: {1} => status={2}, {3}, query-started={4}, elapsed-ms={5} {6}" -f $Phase, $Name, $Result.Status, $addressSummary, $Result.QueryStarted, $Result.DurationMilliseconds, $Result.Detail)
 }
 
 function Invoke-ProductionMode([ValidateSet('Apply','Restore')][string]$Mode) {
@@ -459,11 +477,11 @@ try {
 
     foreach ($control in $controls) {
         $resolved = Invoke-OsResolver $control
-        Write-ResolverResult 'baseline control' $control $resolved
-        $directA = Invoke-DirectDnsProbe $control $dnsServer 'A'
-        Write-DirectDnsResult 'baseline' $control 'A' $directA
-        $directAAAA = Invoke-DirectDnsProbe $control $dnsServer 'AAAA'
-        Write-DirectDnsResult 'baseline' $control 'AAAA' $directAAAA
+        Write-ResolverResult -Phase 'baseline control' -Name $control -Result $resolved
+        $directA = Invoke-DirectDnsProbe -Name $control -Server $dnsServer -RecordType 'A'
+        Write-DirectDnsResult -Phase 'baseline' -Name $control -RecordType 'A' -Result $directA
+        $directAAAA = Invoke-DirectDnsProbe -Name $control -Server $dnsServer -RecordType 'AAAA'
+        Write-DirectDnsResult -Phase 'baseline' -Name $control -RecordType 'AAAA' -Result $directAAAA
         foreach ($alias in $directA.CnameTargets) {
             if ($blockedSet.ContainsKey($alias)) { throw "Control '$control' has CNAME target '$alias' in the bundled block list; choose an unblocked control record." }
         }
@@ -498,7 +516,7 @@ try {
             }
             if ($blockedSample.Count -ge 4) { break }
             $resolved = Invoke-OsResolver $candidate
-            Write-ResolverResult 'baseline block-list candidate' $candidate $resolved
+            Write-ResolverResult -Phase 'baseline block-list candidate' -Name $candidate -Result $resolved
             if ($resolved.Status -eq 'Success' -and (Test-UsableResolverAddresses $resolved.Addresses)) {
                 $blockedBaseline[$candidate] = $resolved.Addresses
                 $blockedSample.Add($candidate)
@@ -521,13 +539,43 @@ try {
                 Add-Failure 'SCRIPT' 'Production Apply returned success but did not create its requested recovery backup.'
             } else {
                 Write-Log 'Production Apply completed and its recovery backup exists.'
+                $appliedHostsText = [IO.File]::ReadAllText($script:HostsPath)
+                $appliedBlock = [regex]::Match($appliedHostsText, '(?ms)^# BEGIN SOS AD BLOCKER\r?\n(.*?)^# END SOS AD BLOCKER(?:\r?\n|$)')
+                if (-not $appliedBlock.Success) {
+                    Add-Failure 'SCRIPT' 'Production Apply did not leave a complete managed block in the runner hosts file.'
+                } else {
+                    $appliedEntries = @(ConvertTo-BlockEntries $appliedBlock.Groups[1].Value)
+                    $customNames = @{}
+                    $originalText = [Text.Encoding]::UTF8.GetString($originalBytes)
+                    foreach ($line in ($originalText -split '\r?\n')) {
+                        $parts = (($line -split '#', 2)[0].Trim() -split '\s+')
+                        if ($parts.Count -ge 2) {
+                            foreach ($name in $parts[1..($parts.Count - 1)]) { $customNames[$name.ToLowerInvariant()] = $true }
+                        }
+                    }
+                    $expectedApplied = @($blockedSet.Keys | Where-Object { -not $customNames.ContainsKey($_) } | Sort-Object)
+                    $actualApplied = @($appliedEntries | ForEach-Object { ($_ -split ' ', 2)[1] } | Sort-Object)
+                    $mappingLines = @($appliedBlock.Groups[1].Value -split '\r?\n' | Where-Object { $_ })
+                    $maxAliases = 0
+                    foreach ($mappingLine in $mappingLines) {
+                        $aliasCount = (($mappingLine -split '\s+').Count - 1)
+                        if ($aliasCount -gt $maxAliases) { $maxAliases = $aliasCount }
+                    }
+                    Write-Log "Applied block verification: domains=$($actualApplied.Count), lines=$($mappingLines.Count), max-aliases-per-line=$maxAliases"
+                    if ($actualApplied.Count -ne $expectedApplied.Count -or ($actualApplied -join "`n") -ne ($expectedApplied -join "`n")) {
+                        Add-Failure 'SCRIPT' 'Production Apply changed or omitted domains from the effective full block list.'
+                    }
+                    if ($maxAliases -gt 9 -or $mappingLines.Count -ge $actualApplied.Count) {
+                        Add-Failure 'SCRIPT' 'Production Apply did not use the expected bounded multi-alias line format.'
+                    }
+                }
             }
 
             if (-not (Invoke-DnsFlush 'after Apply')) { Add-Failure 'ENVIRONMENT' 'DNS cache flush after Apply failed or timed out.' }
             $blockedResolverFailures = New-Object 'System.Collections.Generic.List[string]'
             foreach ($domain in $blockedSample) {
                 $resolved = Invoke-OsResolver $domain
-                Write-ResolverResult 'after Apply blocked-domain assertion' $domain $resolved
+                Write-ResolverResult -Phase 'after Apply blocked-domain assertion' -Name $domain -Result $resolved
                 if ($resolved.Status -ne 'Success') {
                     $blockedResolverFailures.Add($domain)
                 } elseif (@($resolved.Addresses | Where-Object { $_ -eq '0.0.0.0' }).Count -eq 0) {
@@ -539,7 +587,7 @@ try {
             $controlResolverFailures = New-Object 'System.Collections.Generic.List[string]'
             foreach ($control in $healthyControls) {
                 $resolved = Invoke-OsResolver $control
-                Write-ResolverResult 'after Apply control assertion' $control $resolved
+                Write-ResolverResult -Phase 'after Apply control assertion' -Name $control -Result $resolved
                 $osGroups = Get-UsableResolverAddressGroups $resolved.Addresses
                 if ($resolved.Status -ne 'Success' -or $osGroups.A.Count -eq 0) {
                     $controlResolverFailures.Add($control)
@@ -548,8 +596,8 @@ try {
                 }
             }
             foreach ($domain in $blockedResolverFailures) {
-                $direct = Invoke-DirectDnsProbe $domain $dnsServer
-                Write-DirectDnsResult 'after Apply' $domain 'A' $direct
+                $direct = Invoke-DirectDnsProbe -Name $domain -Server $dnsServer
+                Write-DirectDnsResult -Phase 'after Apply' -Name $domain -RecordType 'A' -Result $direct
                 if ($direct.Status -eq 'Success' -and (Test-UsableResolverAddresses $direct.Addresses)) {
                     Add-Failure 'SCRIPT' "The configured DNS server still resolves '$domain', but the Windows OS resolver failed after Apply."
                 } else {
@@ -557,8 +605,8 @@ try {
                 }
             }
             foreach ($control in $controlResolverFailures) {
-                $direct = Invoke-DirectDnsProbe $control $dnsServer
-                Write-DirectDnsResult 'after Apply' $control 'A' $direct
+                $direct = Invoke-DirectDnsProbe -Name $control -Server $dnsServer
+                Write-DirectDnsResult -Phase 'after Apply' -Name $control -RecordType 'A' -Result $direct
                 if ($direct.Status -eq 'Success' -and (Test-UsableResolverAddresses $direct.Addresses)) {
                     Add-Failure 'SCRIPT' "The configured DNS server still resolves control '$control', but the Windows OS resolver failed after Apply."
                 } else {
@@ -633,19 +681,19 @@ try {
             if (-not (Invoke-DnsFlush 'after Restore')) { Add-Failure 'ENVIRONMENT' 'DNS cache flush after Restore failed or timed out.' }
             foreach ($control in $healthyControls) {
                 $resolved = Invoke-OsResolver $control
-                Write-ResolverResult 'after Restore control assertion' $control $resolved
+                Write-ResolverResult -Phase 'after Restore control assertion' -Name $control -Result $resolved
                 $osGroups = Get-UsableResolverAddressGroups $resolved.Addresses
                 if ($resolved.Status -ne 'Success' -or $osGroups.A.Count -eq 0) {
-                    $direct = Invoke-DirectDnsProbe $control $dnsServer 'A'
-                    Write-DirectDnsResult 'after Restore' $control 'A' $direct
+                    $direct = Invoke-DirectDnsProbe -Name $control -Server $dnsServer -RecordType 'A'
+                    Write-DirectDnsResult -Phase 'after Restore' -Name $control -RecordType 'A' -Result $direct
                     if ($direct.Status -eq 'Success' -and (Test-UsableResolverAddresses $direct.Addresses)) {
                         Add-Failure 'SCRIPT' "The configured DNS server still resolves control '$control', but the Windows OS resolver failed after Restore."
                     } else {
                         Add-Failure 'ENVIRONMENT' "External DNS/network health check for control '$control' failed after Restore."
                     }
                 } elseif (@($resolved.Addresses | Where-Object { $_ -eq '0.0.0.0' }).Count -gt 0) {
-                    $direct = Invoke-DirectDnsProbe $control $dnsServer 'A'
-                    Write-DirectDnsResult 'after Restore' $control 'A' $direct
+                    $direct = Invoke-DirectDnsProbe -Name $control -Server $dnsServer -RecordType 'A'
+                    Write-DirectDnsResult -Phase 'after Restore' -Name $control -RecordType 'A' -Result $direct
                     if ($direct.Status -eq 'Success' -and (Test-UsableResolverAddresses $direct.Addresses)) {
                         Add-Failure 'SCRIPT' "Control domain '$control' remained blocked in the Windows OS resolver after Restore."
                     } else {
@@ -655,19 +703,19 @@ try {
             }
             foreach ($domain in $blockedSample) {
                 $resolved = Invoke-OsResolver $domain
-                Write-ResolverResult 'after Restore previously-blocked assertion' $domain $resolved
+                Write-ResolverResult -Phase 'after Restore previously-blocked assertion' -Name $domain -Result $resolved
                 $osGroups = Get-UsableResolverAddressGroups $resolved.Addresses
                 if ($resolved.Status -ne 'Success' -or $osGroups.A.Count -eq 0) {
-                    $direct = Invoke-DirectDnsProbe $domain $dnsServer 'A'
-                    Write-DirectDnsResult 'after Restore' $domain 'A' $direct
+                    $direct = Invoke-DirectDnsProbe -Name $domain -Server $dnsServer -RecordType 'A'
+                    Write-DirectDnsResult -Phase 'after Restore' -Name $domain -RecordType 'A' -Result $direct
                     if ($direct.Status -eq 'Success' -and (Test-UsableResolverAddresses $direct.Addresses)) {
                         Add-Failure 'SCRIPT' "The configured DNS server still resolves '$domain', but the Windows OS resolver failed after Restore."
                     } else {
                         Add-Failure 'ENVIRONMENT' "Previously resolvable domain '$domain' is no longer available from external DNS after Restore."
                     }
                 } elseif (@($resolved.Addresses | Where-Object { $_ -eq '0.0.0.0' }).Count -gt 0) {
-                    $direct = Invoke-DirectDnsProbe $domain $dnsServer 'A'
-                    Write-DirectDnsResult 'after Restore' $domain 'A' $direct
+                    $direct = Invoke-DirectDnsProbe -Name $domain -Server $dnsServer -RecordType 'A'
+                    Write-DirectDnsResult -Phase 'after Restore' -Name $domain -RecordType 'A' -Result $direct
                     if ($direct.Status -eq 'Success' -and (Test-UsableResolverAddresses $direct.Addresses)) {
                         Add-Failure 'SCRIPT' "Previously blocked domain '$domain' still resolves to 0.0.0.0 in the Windows OS resolver after verified Restore and cache flush."
                     } else {

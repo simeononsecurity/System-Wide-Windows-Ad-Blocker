@@ -9,6 +9,17 @@ function Get-BytesHash([byte[]]$Bytes) {
     finally { $sha.Dispose() }
 }
 
+<#
+.SYNOPSIS
+Parses and validates the domains in a hosts-format block list.
+.DESCRIPTION
+Normalizes valid entries to unique, sorted 0.0.0.0 mappings and rejects
+malformed input before the active hosts file is changed.
+.PARAMETER Text
+The complete hosts-format block list to validate.
+.OUTPUTS
+System.String. One normalized mapping per domain.
+#>
 function ConvertTo-BlockEntries([string]$Text) {
     if ($Text.Length -gt 10MB -or $Text.Contains([char]0)) { throw 'Invalid block list size or encoding.' }
     $entries = New-Object 'System.Collections.Generic.SortedSet[string]'
@@ -191,6 +202,25 @@ function Restore-FileBytes([string]$Path, [byte[]]$Bytes, [string]$ExpectedHash,
     }
 }
 
+<#
+.SYNOPSIS
+Applies a validated block list to a managed hosts-file section or restores it.
+.DESCRIPTION
+Preserves custom hosts mappings, stores an integrity-checked copy of the exact
+original bytes, and removes that recovery data only after verified restoration.
+.PARAMETER HostsPath
+Path to the hosts file to update.
+.PARAMETER BackupPath
+Path to the recovery JSON file.
+.PARAMETER Mode
+Apply a validated list or restore the exact original hosts bytes.
+.PARAMETER ListPath
+Optional local hosts-format block list.
+.PARAMETER ListUri
+HTTPS source URI used when ListPath is not supplied.
+.OUTPUTS
+System.String. Apply status and the number of blocked domains.
+#>
 function Invoke-HostsBlocker {
     [CmdletBinding(SupportsShouldProcess)]
     param(
