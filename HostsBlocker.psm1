@@ -43,6 +43,121 @@ function Write-AtomicBytes([string]$Path, [byte[]]$Bytes) {
     } finally { if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force } }
 }
 
+function Invoke-FileOperationWithRetry {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Operation,
+        [Parameter(Mandatory)][scriptblock]$Action,
+        [ValidateRange(1, 10)][int]$MaxAttempts = 4,
+        [ValidateRange(0, 5000)][int]$RetryDelayMilliseconds = 250
+    )
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        try {
+            & $Action
+            return
+        } catch {
+            $rootFailure = $_.Exception
+            $failure = $rootFailure
+            $win32Code = 0
+            while ($failure) {
+                $candidate = $failure.HResult -band 0xFFFF
+                if ($candidate -in @(5, 32, 33)) { $win32Code = $candidate; break }
+                if ($failure -is [ComponentModel.Win32Exception] -and $failure.NativeErrorCode -in @(5, 32, 33)) {
+                    $win32Code = $failure.NativeErrorCode
+                    break
+                }
+                $failure = $failure.InnerException
+            }
+            if ($win32Code -eq 0) { throw }
+            if ($attempt -lt $MaxAttempts) {
+                Start-Sleep -Milliseconds ($RetryDelayMilliseconds * $attempt)
+                continue
+            }
+            if ($win32Code -in @(32, 33)) {
+                $detail = 'Windows reported a sharing or lock violation. Another process or security product may hold an exclusive lock.'
+            } else {
+                $detail = 'Windows reported access denied. Check permissions, file attributes, and whether another process or security product holds an exclusive lock.'
+            }
+            $message = "Unable to $Operation '$Path' after $MaxAttempts attempts. $detail Check the file and retry after the lock or access problem is resolved. If a restore backup exists, it remains available and is removed only after the restored file passes integrity verification."
+            throw [IO.IOException]::new($message, $rootFailure)
+        }
+    }
+}
+
+function Read-FileBytesWithRetry([string]$Path, [string]$Operation = 'read') {
+    $bytes = Invoke-FileOperationWithRetry -Path $Path -Operation $Operation -Action { [IO.File]::ReadAllBytes($Path) }
+    return ,([byte[]]$bytes)
+}
+
+function Test-RestoreSourceState([byte[]]$Bytes, $Saved) {
+    $hash = Get-BytesHash $Bytes
+    $knownState = $hash -eq $Saved.AppliedHash -or $hash -eq $Saved.OriginalHash -or $hash -eq $Saved.PreviousHash
+    return [bool]$knownState
+}
+
+function Read-StreamBytes([IO.Stream]$Stream) {
+    if ($Stream.Length -gt [int]::MaxValue) { throw 'Hosts file is too large to verify safely.' }
+    $bytes = New-Object 'byte[]' ([int]$Stream.Length)
+    $Stream.Position = 0
+    $offset = 0
+    while ($offset -lt $bytes.Length) {
+        $read = $Stream.Read($bytes, $offset, [Math]::Min(65536, $bytes.Length - $offset))
+        if ($read -le 0) { throw 'Hosts file changed while it was being checked for restoration.' }
+        $offset += $read
+    }
+    return ,$bytes
+}
+
+function Restore-FileBytes([string]$Path, [byte[]]$Bytes, [string]$ExpectedHash, $Saved) {
+    $attributes = Invoke-FileOperationWithRetry -Path $Path -Operation 'read file attributes for' -Action { [IO.File]::GetAttributes($Path) }
+    $attributesToClear = [IO.FileAttributes]::ReadOnly -bor [IO.FileAttributes]::Hidden -bor [IO.FileAttributes]::System
+    $writeAttributes = $attributes -band (-bnot $attributesToClear)
+    $attributesChanged = $writeAttributes -ne $attributes
+    $stream = $null
+    try {
+        if ($attributesChanged) {
+            Invoke-FileOperationWithRetry -Path $Path -Operation 'clear blocking file attributes on' -Action { [IO.File]::SetAttributes($Path, $writeAttributes) }
+        }
+
+        # Open the existing file for read/write without delete/rename access. The
+        # handle blocks new writers while we recheck its bytes and do the restore.
+        $stream = Invoke-FileOperationWithRetry -Path $Path -Operation 'open hosts file for restore at' -Action {
+            [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::Read)
+        }
+        $current = Read-StreamBytes $stream
+        if (-not (Test-RestoreSourceState -Bytes $current -Saved $Saved)) {
+            throw 'Hosts file changed immediately before restoration. Preserve those edits; the recovery backup was retained.'
+        }
+        # Reset before every attempt so a transient I/O failure after truncation
+        # can retry from the first byte while this handle still excludes writers.
+        Invoke-FileOperationWithRetry -Path $Path -Operation 'write restored hosts bytes to' -Action {
+            $stream.SetLength(0)
+            $stream.Position = 0
+            $stream.Write($Bytes, 0, $Bytes.Length)
+            $stream.Flush($true)
+        }
+        $stream.Dispose()
+        $stream = $null
+
+        $restored = Read-FileBytesWithRetry -Path $Path -Operation 'verify restored hosts file at'
+        if ((Get-BytesHash $restored) -ne $ExpectedHash) { throw 'Restore verification failed; the recovery backup was retained.' }
+
+        if ($attributesChanged) {
+            Invoke-FileOperationWithRetry -Path $Path -Operation 'restore file attributes on' -Action { [IO.File]::SetAttributes($Path, $attributes) }
+            $attributesChanged = $false
+        }
+        $restored = Read-FileBytesWithRetry -Path $Path -Operation 'verify restored hosts file at'
+        if ((Get-BytesHash $restored) -ne $ExpectedHash) { throw 'Restore verification failed after restoring file attributes; the recovery backup was retained.' }
+    } catch {
+        $failure = $_
+        if ($stream) { try { $stream.Dispose() } catch { } }
+        if ($attributesChanged) {
+            try { Invoke-FileOperationWithRetry -Path $Path -Operation 'restore original file attributes on' -Action { [IO.File]::SetAttributes($Path, $attributes) } } catch { }
+        }
+        throw $failure.Exception
+    }
+}
+
 function Invoke-HostsBlocker {
     [CmdletBinding(SupportsShouldProcess)]
     param(
@@ -56,7 +171,7 @@ function Invoke-HostsBlocker {
     $BackupPath = [IO.Path]::GetFullPath($BackupPath)
     if ($HostsPath -eq $BackupPath) { throw 'Backup path must differ from hosts path.' }
     if ((Get-Item -LiteralPath $HostsPath).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Hosts symlinks are not supported.' }
-    $original = [IO.File]::ReadAllBytes($HostsPath)
+    $original = Read-FileBytesWithRetry -Path $HostsPath -Operation 'read hosts file at'
     $saved = $null
     if (Test-Path -LiteralPath $BackupPath) {
         $saved = Get-Content -LiteralPath $BackupPath -Raw | ConvertFrom-Json
@@ -66,13 +181,15 @@ function Invoke-HostsBlocker {
     }
     if ($Mode -eq 'Restore') {
         if (-not $saved) { throw 'No backup exists. Legacy changes require manual recovery.' }
-        $hash = Get-BytesHash $original
-        if ($hash -ne $saved.AppliedHash -and $hash -ne $saved.OriginalHash -and $hash -ne $saved.PreviousHash) {
+        if (-not (Test-RestoreSourceState -Bytes $original -Saved $saved)) {
             throw 'Hosts file changed after application. Preserve those edits before exact restoration.'
         }
         if ($PSCmdlet.ShouldProcess($HostsPath, 'Restore exact original hosts bytes')) {
-            Write-AtomicBytes $HostsPath $backupBytes
-            if ((Get-BytesHash ([IO.File]::ReadAllBytes($HostsPath))) -ne $saved.OriginalHash) { throw 'Restore verification failed.' }
+            $latest = Read-FileBytesWithRetry -Path $HostsPath -Operation 'recheck hosts file before restoring'
+            if (-not (Test-RestoreSourceState -Bytes $latest -Saved $saved)) {
+                throw 'Hosts file changed immediately before restoration. Preserve those edits; the recovery backup was retained.'
+            }
+            Restore-FileBytes -Path $HostsPath -Bytes $backupBytes -ExpectedHash $saved.OriginalHash -Saved $saved
             Remove-Item -LiteralPath $BackupPath
         }
         return
