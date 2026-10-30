@@ -11,6 +11,13 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Test blocked-resolver error classification
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $testScript = Join-Path $env:GITHUB_WORKSPACE 'tests/DnsIntegration.ps1'
+          & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $testScript -TestResolverClassification
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Apply full bundled list and verify OS DNS behavior
         shell: powershell
         run: |

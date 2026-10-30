@@ -4,6 +4,7 @@ param(
     [switch]$ResolveName,
     [switch]$DnsProbe,
     [switch]$DnsTelemetry,
+    [switch]$TestResolverClassification,
     [switch]$EmergencyRestore
 )
 
@@ -46,6 +47,60 @@ function Write-QueryStartedMarker {
     if ($markerPath) { [IO.File]::WriteAllText($markerPath, 'started', [Text.Encoding]::ASCII) }
 }
 
+function Test-ExpectedBlockedResolverFailure {
+    param(
+        [Parameter(Mandatory)][psobject]$ResolverResult,
+        [Parameter(Mandatory)][bool]$InstalledMappingVerified,
+        [Parameter(Mandatory)][bool]$DirectDnsHealthy
+    )
+
+    if (-not $InstalledMappingVerified -or -not $DirectDnsHealthy -or $ResolverResult.Status -ne 'Failure') { return $false }
+    if ($ResolverResult.ExceptionType -ne 'System.Net.Sockets.SocketException') { return $false }
+    return (($ResolverResult.SocketErrorCode -eq 'HostNotFound' -and $ResolverResult.NativeErrorCode -eq 11001) -or
+        ($ResolverResult.SocketErrorCode -eq 'NoData' -and $ResolverResult.NativeErrorCode -eq 11004))
+}
+
+if ($TestResolverClassification) {
+    $knownBlockedResult = [pscustomobject]@{
+        Status = 'Failure'
+        ExceptionType = 'System.Net.Sockets.SocketException'
+        SocketErrorCode = 'HostNotFound'
+        NativeErrorCode = 11001
+    }
+    if (-not (Test-ExpectedBlockedResolverFailure -ResolverResult $knownBlockedResult -InstalledMappingVerified $true -DirectDnsHealthy $true)) {
+        throw 'Expected Windows host-block resolver error was not accepted.'
+    }
+
+    $knownNoDataResult = [pscustomobject]@{
+        Status = 'Failure'
+        ExceptionType = 'System.Net.Sockets.SocketException'
+        SocketErrorCode = 'NoData'
+        NativeErrorCode = 11004
+    }
+    if (-not (Test-ExpectedBlockedResolverFailure -ResolverResult $knownNoDataResult -InstalledMappingVerified $true -DirectDnsHealthy $true)) {
+        throw 'Expected Windows no-data host-block error was not accepted.'
+    }
+
+    $rejectedResults = @(
+        [pscustomobject]@{ Status = 'Timeout'; ExceptionType = $null; SocketErrorCode = $null; NativeErrorCode = $null },
+        [pscustomobject]@{ Status = 'Failure'; ExceptionType = 'System.InvalidOperationException'; SocketErrorCode = $null; NativeErrorCode = $null },
+        [pscustomobject]@{ Status = 'Failure'; ExceptionType = 'System.Net.Sockets.SocketException'; SocketErrorCode = 'TimedOut'; NativeErrorCode = 10060 }
+    )
+    foreach ($rejectedResult in $rejectedResults) {
+        if (Test-ExpectedBlockedResolverFailure -ResolverResult $rejectedResult -InstalledMappingVerified $true -DirectDnsHealthy $true) {
+            throw "Unexpected resolver result '$($rejectedResult.Status)/$($rejectedResult.SocketErrorCode)' was accepted as a block."
+        }
+    }
+    if (Test-ExpectedBlockedResolverFailure -ResolverResult $knownBlockedResult -InstalledMappingVerified $false -DirectDnsHealthy $true) {
+        throw 'Resolver error was accepted without a verified installed hosts mapping.'
+    }
+    if (Test-ExpectedBlockedResolverFailure -ResolverResult $knownBlockedResult -InstalledMappingVerified $true -DirectDnsHealthy $false) {
+        throw 'Resolver error was accepted without healthy direct DNS.'
+    }
+    [Console]::Out.WriteLine('PASS: blocked-resolver classification accepts only verified Windows hosts HostNotFound/NoData errors and rejects timeouts and unexpected failures.')
+    exit 0
+}
+
 # The resolver child is deliberately a separate Windows PowerShell process so
 # the parent can enforce a hard timeout around the OS hostname-resolution API.
 if ($ResolveName) {
@@ -58,14 +113,28 @@ if ($ResolveName) {
         Write-QueryStartedMarker
         $addresses = @([System.Net.Dns]::GetHostAddresses($name) | ForEach-Object { $_.IPAddressToString })
         if ($addresses.Count -eq 0) {
+            [Console]::Out.WriteLine('RESOLVE_EXCEPTION_TYPE=NoAddressReturned')
+            [Console]::Out.WriteLine('RESOLVE_SOCKET_ERROR=')
+            [Console]::Out.WriteLine('RESOLVE_NATIVE_ERROR=')
             [Console]::Error.WriteLine('The OS resolver returned no addresses.')
-            exit 2
+            exit 3
         }
         [Console]::Out.WriteLine(($addresses -join ','))
         exit 0
-    } catch {
-        [Console]::Error.WriteLine('OS resolver query failed.')
+    } catch [System.Net.Sockets.SocketException] {
+        $exception = $_.Exception
+        [Console]::Out.WriteLine('RESOLVE_EXCEPTION_TYPE=' + $exception.GetType().FullName)
+        [Console]::Out.WriteLine('RESOLVE_SOCKET_ERROR=' + [string]$exception.SocketErrorCode)
+        [Console]::Out.WriteLine('RESOLVE_NATIVE_ERROR=' + [string]$exception.NativeErrorCode)
+        [Console]::Error.WriteLine('Windows OS resolver returned a socket error.')
         exit 2
+    } catch {
+        $exception = $_.Exception
+        [Console]::Out.WriteLine('RESOLVE_EXCEPTION_TYPE=' + $exception.GetType().FullName)
+        [Console]::Out.WriteLine('RESOLVE_SOCKET_ERROR=')
+        [Console]::Out.WriteLine('RESOLVE_NATIVE_ERROR=')
+        [Console]::Error.WriteLine('Windows OS resolver failed with an unexpected exception.')
+        exit 3
     }
 }
 
@@ -240,6 +309,8 @@ $script:LogPath = Join-Path $env:RUNNER_TEMP 'dns-integration.log'
 $script:SummaryPath = Join-Path $env:RUNNER_TEMP 'dns-integration-summary.md'
 $script:ScriptFailures = New-Object 'System.Collections.Generic.List[string]'
 $script:EnvironmentFailures = New-Object 'System.Collections.Generic.List[string]'
+$script:AppliedMappingAddresses = @{}
+$script:AppliedMappingsVerified = $false
 $script:HostsPath = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
 $script:BackupPath = Join-Path $env:RUNNER_TEMP 'dns-integration-backup.json'
 $script:OriginalSnapshotPath = Join-Path $env:RUNNER_TEMP 'dns-integration-original-hosts.bin'
@@ -346,14 +417,29 @@ function Invoke-OsResolver([string]$Name) {
     if ($queryStarted) { Remove-Item -LiteralPath $markerPath -Force }
     if ($result.TimedOut) {
         $detail = if ($queryStarted) { 'OS resolver query started but exceeded the timeout.' } else { 'Resolver child did not reach query start before the deadline.' }
-        return [pscustomobject]@{ Status = 'Timeout'; Addresses = @(); DurationMilliseconds = $timer.ElapsedMilliseconds; QueryStarted = $queryStarted; Detail = $detail }
+        return [pscustomobject]@{ Status = 'Timeout'; Addresses = @(); ExceptionType = $null; SocketErrorCode = $null; NativeErrorCode = $null; DurationMilliseconds = $timer.ElapsedMilliseconds; QueryStarted = $queryStarted; Detail = $detail }
     }
     if ($result.ExitCode -ne 0) {
-        return [pscustomobject]@{ Status = 'Failure'; Addresses = @(); DurationMilliseconds = $timer.ElapsedMilliseconds; QueryStarted = $queryStarted; Detail = $result.StdErr.Trim() }
+        $metadata = @{}
+        foreach ($line in ($result.StdOut -split '\r?\n')) {
+            if ($line -match '^RESOLVE_(EXCEPTION_TYPE|SOCKET_ERROR|NATIVE_ERROR)=(.*)$') { $metadata[$Matches[1]] = $Matches[2] }
+        }
+        $nativeErrorCode = $null
+        if ($metadata['NATIVE_ERROR'] -match '^\d+$') { $nativeErrorCode = [int]$metadata['NATIVE_ERROR'] }
+        return [pscustomobject]@{
+            Status = 'Failure'
+            Addresses = @()
+            ExceptionType = $metadata['EXCEPTION_TYPE']
+            SocketErrorCode = $metadata['SOCKET_ERROR']
+            NativeErrorCode = $nativeErrorCode
+            DurationMilliseconds = $timer.ElapsedMilliseconds
+            QueryStarted = $queryStarted
+            Detail = $result.StdErr.Trim()
+        }
     }
     $addresses = @($result.StdOut.Trim() -split ',' | Where-Object { $_ })
-    if ($addresses.Count -eq 0) { return [pscustomobject]@{ Status = 'Failure'; Addresses = @(); DurationMilliseconds = $timer.ElapsedMilliseconds; QueryStarted = $queryStarted; Detail = 'OS resolver returned no address text.' } }
-    return [pscustomobject]@{ Status = 'Success'; Addresses = $addresses; DurationMilliseconds = $timer.ElapsedMilliseconds; QueryStarted = $queryStarted; Detail = '' }
+    if ($addresses.Count -eq 0) { return [pscustomobject]@{ Status = 'Failure'; Addresses = @(); ExceptionType = 'MissingAddressOutput'; SocketErrorCode = $null; NativeErrorCode = $null; DurationMilliseconds = $timer.ElapsedMilliseconds; QueryStarted = $queryStarted; Detail = 'OS resolver returned no address text.' } }
+    return [pscustomobject]@{ Status = 'Success'; Addresses = $addresses; ExceptionType = $null; SocketErrorCode = $null; NativeErrorCode = $null; DurationMilliseconds = $timer.ElapsedMilliseconds; QueryStarted = $queryStarted; Detail = '' }
 }
 
 function Invoke-DnsClientTelemetry([string]$Phase) {
@@ -439,7 +525,8 @@ function Write-ResolverResult([string]$Phase, [string]$Name, $Result) {
     $addressCount = $Result.Addresses.Count
     $groups = Get-UsableResolverAddressGroups $Result.Addresses
     $addressSummary = if ($Phase -match 'control') { "A=[$($groups.A -join ',')] AAAA=[$($groups.AAAA -join ',')]" } else { "address-count=$addressCount" }
-    Write-Log ("Resolver {0}: {1} => status={2}, {3}, query-started={4}, elapsed-ms={5} {6}" -f $Phase, $Name, $Result.Status, $addressSummary, $Result.QueryStarted, $Result.DurationMilliseconds, $Result.Detail)
+    $errorSummary = if ($Result.ExceptionType) { " exception=$($Result.ExceptionType), socket-error=$($Result.SocketErrorCode), native-error=$($Result.NativeErrorCode)" } else { '' }
+    Write-Log ("Resolver {0}: {1} => status={2}, {3}, query-started={4}, elapsed-ms={5}{6} {7}" -f $Phase, $Name, $Result.Status, $addressSummary, $Result.QueryStarted, $Result.DurationMilliseconds, $errorSummary, $Result.Detail)
 }
 
 function Invoke-ProductionMode([ValidateSet('Apply','Restore')][string]$Mode) {
@@ -585,13 +672,28 @@ try {
                     $actualApplied = @($appliedEntries | ForEach-Object { ($_ -split ' ', 2)[1] } | Sort-Object)
                     $mappingLines = @($appliedBlock.Groups[1].Value -split '\r?\n' | Where-Object { $_ })
                     $maxAliases = 0
+                    $invalidMappingAddress = $false
                     foreach ($mappingLine in $mappingLines) {
-                        $aliasCount = (($mappingLine -split '\s+').Count - 1)
+                        $mappingParts = @($mappingLine.Trim() -split '\s+')
+                        if ($mappingParts.Count -lt 2) {
+                            $invalidMappingAddress = $true
+                            continue
+                        }
+                        $mappingAddress = $mappingParts[0]
+                        if ($mappingAddress -ne '0.0.0.0') { $invalidMappingAddress = $true }
+                        foreach ($mappedName in $mappingParts[1..($mappingParts.Count - 1)]) {
+                            $script:AppliedMappingAddresses[$mappedName.ToLowerInvariant()] = $mappingAddress
+                        }
+                        $aliasCount = $mappingParts.Count - 1
                         if ($aliasCount -gt $maxAliases) { $maxAliases = $aliasCount }
                     }
+                    $script:AppliedMappingsVerified = ($mappingLines.Count -gt 0 -and -not $invalidMappingAddress)
                     Write-Log "Applied block verification: domains=$($actualApplied.Count), lines=$($mappingLines.Count), max-aliases-per-line=$maxAliases"
                     if ($actualApplied.Count -ne $expectedApplied.Count -or ($actualApplied -join "`n") -ne ($expectedApplied -join "`n")) {
                         Add-Failure 'SCRIPT' 'Production Apply changed or omitted domains from the effective full block list.'
+                    }
+                    if (-not $script:AppliedMappingsVerified) {
+                        Add-Failure 'SCRIPT' 'Production Apply did not map every managed block line to 0.0.0.0.'
                     }
                     if ($maxAliases -gt 9 -or $mappingLines.Count -ge $actualApplied.Count) {
                         Add-Failure 'SCRIPT' 'Production Apply did not use the expected bounded multi-alias line format.'
@@ -601,12 +703,12 @@ try {
 
             if (-not (Invoke-DnsFlush 'after Apply')) { Add-Failure 'ENVIRONMENT' 'DNS cache flush after Apply failed or timed out.' }
             Invoke-DnsClientTelemetry -Phase 'after Apply'
-            $blockedResolverFailures = New-Object 'System.Collections.Generic.List[string]'
+            $blockedResolverFailures = New-Object 'System.Collections.Generic.List[object]'
             foreach ($domain in $blockedSample) {
                 $resolved = Invoke-OsResolver $domain
                 Write-ResolverResult -Phase 'after Apply blocked-domain assertion' -Name $domain -Result $resolved
                 if ($resolved.Status -ne 'Success') {
-                    $blockedResolverFailures.Add($domain)
+                    $blockedResolverFailures.Add([pscustomobject]@{ Name = $domain; ResolverResult = $resolved })
                 } elseif (@($resolved.Addresses | Where-Object { $_ -ne '0.0.0.0' }).Count -gt 0) {
                     Add-Failure 'SCRIPT' "Apply returned non-blocked addresses for '$domain' (address-count=$($resolved.Addresses.Count))."
                 } else {
@@ -625,13 +727,19 @@ try {
                 }
             }
             Invoke-DnsClientTelemetry -Phase 'after Apply resolver probes'
-            foreach ($domain in $blockedResolverFailures) {
+            foreach ($blockedFailure in $blockedResolverFailures) {
+                $domain = $blockedFailure.Name
+                $resolverResult = $blockedFailure.ResolverResult
+                $mappingVerified = ($script:AppliedMappingsVerified -and $script:AppliedMappingAddresses.ContainsKey($domain) -and $script:AppliedMappingAddresses[$domain] -eq '0.0.0.0')
                 $direct = Invoke-DirectDnsProbe -Name $domain -Server $dnsServer
                 Write-DirectDnsResult -Phase 'after Apply' -Name $domain -RecordType 'A' -Result $direct
-                if ($direct.Status -eq 'Success' -and (Test-UsableResolverAddresses $direct.Addresses)) {
-                    Write-Log "PASS: Windows OS resolver did not return an address for blocked '$domain'; direct DNS remains healthy and the verified hosts mapping takes precedence."
+                $directDnsHealthy = ($direct.Status -eq 'Success' -and (Test-UsableResolverAddresses $direct.Addresses))
+                if (Test-ExpectedBlockedResolverFailure -ResolverResult $resolverResult -InstalledMappingVerified $mappingVerified -DirectDnsHealthy $directDnsHealthy) {
+                    Write-Log "PASS: Windows OS resolver returned the expected $($resolverResult.SocketErrorCode) for '$domain'; verified 0.0.0.0 hosts mapping is installed and direct DNS remains healthy."
+                } elseif ($resolverResult.ExceptionType -eq 'System.Net.Sockets.SocketException' -and $resolverResult.SocketErrorCode -in @('HostNotFound','NoData') -and $mappingVerified -and -not $directDnsHealthy) {
+                    Add-Failure 'ENVIRONMENT' "Expected hosts block error occurred for '$domain', but direct DNS was unhealthy after Apply."
                 } else {
-                    Add-Failure 'ENVIRONMENT' "Neither the Windows OS resolver nor the configured DNS server resolved '$domain' after Apply."
+                    Add-Failure 'SCRIPT' "Unexpected Windows resolver result for blocked '$domain': status=$($resolverResult.Status), exception=$($resolverResult.ExceptionType), socket-error=$($resolverResult.SocketErrorCode), native-error=$($resolverResult.NativeErrorCode), direct-dns-healthy=$directDnsHealthy, mapping-verified=$mappingVerified."
                 }
             }
             foreach ($control in $controlResolverFailures) {
