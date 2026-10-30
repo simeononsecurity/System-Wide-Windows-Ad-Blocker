@@ -240,7 +240,6 @@ $script:LogPath = Join-Path $env:RUNNER_TEMP 'dns-integration.log'
 $script:SummaryPath = Join-Path $env:RUNNER_TEMP 'dns-integration-summary.md'
 $script:ScriptFailures = New-Object 'System.Collections.Generic.List[string]'
 $script:EnvironmentFailures = New-Object 'System.Collections.Generic.List[string]'
-$script:Applied = $false
 $script:HostsPath = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
 $script:BackupPath = Join-Path $env:RUNNER_TEMP 'dns-integration-backup.json'
 $script:OriginalSnapshotPath = Join-Path $env:RUNNER_TEMP 'dns-integration-original-hosts.bin'
@@ -458,8 +457,6 @@ function Invoke-ProductionMode([ValidateSet('Apply','Restore')][string]$Mode) {
     return $result
 }
 
-$blockedBaseline = @{}
-$controlsBaseline = @{}
 $blockedSample = New-Object 'System.Collections.Generic.List[string]'
 $healthyControls = New-Object 'System.Collections.Generic.List[string]'
 $originalHash = $null
@@ -520,7 +517,6 @@ try {
         }
         $osGroups = Get-UsableResolverAddressGroups $resolved.Addresses
         if ($resolved.Status -eq 'Success' -and $osGroups.A.Count -gt 0 -and $directA.Status -eq 'Success' -and (Test-UsableResolverAddresses $directA.Addresses)) {
-            $controlsBaseline[$control] = $resolved.Addresses
             $healthyControls.Add($control)
         }
     }
@@ -550,8 +546,8 @@ try {
             if ($blockedSample.Count -ge 4) { break }
             $resolved = Invoke-OsResolver $candidate
             Write-ResolverResult -Phase 'baseline block-list candidate' -Name $candidate -Result $resolved
-            if ($resolved.Status -eq 'Success' -and (Test-UsableResolverAddresses $resolved.Addresses)) {
-                $blockedBaseline[$candidate] = $resolved.Addresses
+            $candidateGroups = Get-UsableResolverAddressGroups $resolved.Addresses
+            if ($resolved.Status -eq 'Success' -and $candidateGroups.A.Count -gt 0) {
                 $blockedSample.Add($candidate)
             }
         }
@@ -567,7 +563,6 @@ try {
         if ($apply.TimedOut -or $apply.ExitCode -ne 0) {
             Add-Failure 'SCRIPT' 'Production Apply failed or timed out on the disposable Windows runner.'
         } else {
-            $script:Applied = $true
             if (-not (Test-Path -LiteralPath $script:BackupPath -PathType Leaf)) {
                 Add-Failure 'SCRIPT' 'Production Apply returned success but did not create its requested recovery backup.'
             } else {
