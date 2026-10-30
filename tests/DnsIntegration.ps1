@@ -292,9 +292,9 @@ function Write-ResolverResult([string]$Phase, [string]$Name, $Result) {
 
 function Invoke-ProductionMode([ValidateSet('Apply','Restore')][string]$Mode) {
     if ($Mode -eq 'Apply') {
-        $arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -Mode Apply -ListPath "{1}" -BackupPath "{2}" -Confirm:$false' -f $script:ScriptPath, $script:ListPath, $script:BackupPath
+        $arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -Mode Apply -ListPath "{1}" -BackupPath "{2}"' -f $script:ScriptPath, $script:ListPath, $script:BackupPath
     } else {
-        $arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -Mode Restore -BackupPath "{1}" -Confirm:$false' -f $script:ScriptPath, $script:BackupPath
+        $arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -Mode Restore -BackupPath "{1}"' -f $script:ScriptPath, $script:BackupPath
     }
     $timer = [Diagnostics.Stopwatch]::StartNew()
     $result = Invoke-BoundedProcess -FileName $script:PowerShellPath -Arguments $arguments -TimeoutSeconds $script:ProcessTimeoutSeconds
