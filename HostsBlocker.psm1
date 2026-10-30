@@ -150,9 +150,18 @@ function Restore-FileBytes([string]$Path, [byte[]]$Bytes, [string]$ExpectedHash,
         if ((Get-BytesHash $restored) -ne $ExpectedHash) { throw 'Restore verification failed after restoring file attributes; the recovery backup was retained.' }
     } catch {
         $failure = $_
-        if ($stream) { try { $stream.Dispose() } catch { } }
+        $cleanupFailures = New-Object 'System.Collections.Generic.List[string]'
+        if ($stream) {
+            try { $stream.Dispose() }
+            catch { $cleanupFailures.Add("Closing the hosts file handle failed: $($_.Exception.Message)") }
+        }
         if ($attributesChanged) {
-            try { Invoke-FileOperationWithRetry -Path $Path -Operation 'restore original file attributes on' -Action { [IO.File]::SetAttributes($Path, $attributes) } } catch { }
+            try { Invoke-FileOperationWithRetry -Path $Path -Operation 'restore original file attributes on' -Action { [IO.File]::SetAttributes($Path, $attributes) } }
+            catch { $cleanupFailures.Add("Restoring the original hosts file attributes failed: $($_.Exception.Message)") }
+        }
+        if ($cleanupFailures.Count -gt 0) {
+            $cleanupDetail = $cleanupFailures -join ' '
+            Write-Warning "Restore failed: $($failure.Exception.Message) Cleanup also failed: $cleanupDetail The recovery backup was retained for manual recovery."
         }
         throw $failure.Exception
     }
