@@ -34,6 +34,8 @@ The default backup is `%ProgramData%\SoS-Hosts\backup.json`. Use `-BackupPath` t
 
 Restore recovers the exact original file, including its line endings. If another application or user changed the hosts file after application, the script stops instead of discarding those edits. Preserve and reconcile edits before retrying. The backup is removed only after successful restoration.
 
+On Windows, restore temporarily clears read-only, hidden, and system attributes, then writes through the existing file without requiring delete/rename access. It retries common sharing, lock, and access-denied errors and reports when another process or security product may be holding the file. If the current contents do not match a known managed state, restore keeps the backup and refuses to overwrite them. A non-retryable disk or device error during an in-place write could leave partial contents; in that case the backup remains available for manual recovery.
+
 Earlier versions overwrote the full hosts file. This release cannot recover custom entries already lost by an earlier installation. Use a pre-existing backup for those entries.
 
 ## Tests
