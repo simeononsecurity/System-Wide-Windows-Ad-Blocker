@@ -8,6 +8,38 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+function Read-DnsUInt16([byte[]]$Packet, [int]$Offset) {
+    if ($Offset -lt 0 -or $Offset + 1 -ge $Packet.Length) { throw 'DNS response ended inside a 16-bit field.' }
+    return (([int]$Packet[$Offset] -shl 8) -bor [int]$Packet[$Offset + 1])
+}
+
+function Read-DnsName([byte[]]$Packet, [int]$Offset, [ref]$NextOffset) {
+    $labels = New-Object 'System.Collections.Generic.List[string]'
+    $position = $Offset
+    $jumped = $false
+    for ($steps = 0; $steps -lt 128; $steps++) {
+        if ($position -lt 0 -or $position -ge $Packet.Length) { throw 'DNS response contained an invalid name offset.' }
+        $length = [int]$Packet[$position]
+        if (($length -band 0xC0) -eq 0xC0) {
+            if ($position + 1 -ge $Packet.Length) { throw 'DNS response ended inside a name pointer.' }
+            $pointer = (($length -band 0x3F) -shl 8) -bor [int]$Packet[$position + 1]
+            if (-not $jumped) { $NextOffset.Value = $position + 2; $jumped = $true }
+            $position = $pointer
+            continue
+        }
+        if ($length -eq 0) {
+            if (-not $jumped) { $NextOffset.Value = $position + 1 }
+            break
+        }
+        if ($length -gt 63 -or $position + $length -ge $Packet.Length) { throw 'DNS response contained an invalid label.' }
+        $position++
+        $labels.Add([Text.Encoding]::ASCII.GetString($Packet, $position, $length))
+        $position += $length
+    }
+    if ($steps -ge 128) { throw 'DNS response name compression loop exceeded its bound.' }
+    return ($labels -join '.')
+}
+
 # The resolver child is deliberately a separate Windows PowerShell process so
 # the parent can enforce a hard timeout around the OS hostname-resolution API.
 if ($ResolveName) {
@@ -41,13 +73,84 @@ if ($DnsProbe) {
         exit 64
     }
     try {
-        $records = @(Resolve-DnsName -Name $name -Server $server -Type $recordType -DnsOnly -ErrorAction Stop)
-        $addresses = @($records | Where-Object { $_.Type -eq $recordType -and $_.IPAddress } | ForEach-Object { $_.IPAddress } | Sort-Object -Unique)
+        # Send a bounded DNS packet directly over UDP. This deliberately avoids
+        # Windows DnsClient APIs so it can distinguish an OS resolver stall
+        # from a real loss of reachability to the configured DNS server.
+        $identifier = New-Object 'byte[]' 2
+        $random = [Security.Cryptography.RandomNumberGenerator]::Create()
+        try { $random.GetBytes($identifier) } finally { $random.Dispose() }
+        $query = New-Object 'System.Collections.Generic.List[byte]'
+        $query.Add($identifier[0]); $query.Add($identifier[1])
+        $query.Add(1); $query.Add(0) # recursion desired
+        $query.Add(0); $query.Add(1) # one question
+        $query.AddRange([byte[]]@(0,0,0,0,0,0))
+        foreach ($label in $name.TrimEnd('.').Split('.')) {
+            $labelBytes = [Text.Encoding]::ASCII.GetBytes($label)
+            $query.Add([byte]$labelBytes.Length)
+            $query.AddRange($labelBytes)
+        }
+        $query.Add(0)
+        $queryType = if ($recordType -eq 'A') { 1 } else { 28 }
+        $query.Add([byte](($queryType -shr 8) -band 0xFF)); $query.Add([byte]($queryType -band 0xFF))
+        $query.Add(0); $query.Add(1) # IN class
+        $queryBytes = $query.ToArray()
+
+        $udp = [Net.Sockets.UdpClient]::new([Net.Sockets.AddressFamily]::InterNetwork)
+        try {
+            $udp.Client.ReceiveTimeout = 4500
+            $endpoint = [Net.IPEndPoint]::new([Net.IPAddress]::Parse($server), 53)
+            $udp.Connect($endpoint)
+            $null = $udp.Send($queryBytes, $queryBytes.Length)
+            $remoteEndpoint = [Net.IPEndPoint]::new([Net.IPAddress]::Any, 0)
+            $response = $udp.Receive([ref]$remoteEndpoint)
+        } finally { $udp.Dispose() }
+
+        if ($response.Length -lt 12) { throw 'DNS response was shorter than its header.' }
+        if ($response[0] -ne $identifier[0] -or $response[1] -ne $identifier[1]) { throw 'DNS response identifier did not match the query.' }
+        $responseFlags = Read-DnsUInt16 $response 2
+        if (($responseFlags -band 0x0200) -ne 0) { throw 'DNS UDP response was truncated.' }
+        if (($responseFlags -band 0x000F) -ne 0) { throw 'DNS server returned an unsuccessful response code.' }
+        $questionCount = Read-DnsUInt16 $response 4
+        $answerCount = Read-DnsUInt16 $response 6
+        $offset = 12
+        for ($questionIndex = 0; $questionIndex -lt $questionCount; $questionIndex++) {
+            $nextOffset = $offset
+            $null = Read-DnsName $response $offset ([ref]$nextOffset)
+            $offset = $nextOffset + 4
+            if ($offset -gt $response.Length) { throw 'DNS response ended inside its question.' }
+        }
+        $addresses = New-Object 'System.Collections.Generic.List[string]'
+        $cnameTargets = New-Object 'System.Collections.Generic.List[string]'
+        for ($answerIndex = 0; $answerIndex -lt $answerCount; $answerIndex++) {
+            $nextOffset = $offset
+            $null = Read-DnsName $response $offset ([ref]$nextOffset)
+            $offset = $nextOffset
+            if ($offset + 10 -gt $response.Length) { throw 'DNS response ended inside an answer header.' }
+            $answerType = Read-DnsUInt16 $response $offset
+            $offset += 2 # type
+            $answerClass = Read-DnsUInt16 $response $offset
+            $offset += 6 # class and TTL
+            $dataLength = Read-DnsUInt16 $response $offset
+            $offset += 2
+            $dataOffset = $offset
+            if ($dataOffset + $dataLength -gt $response.Length) { throw 'DNS response ended inside answer data.' }
+            if ($answerClass -eq 1 -and $answerType -eq 1 -and $dataLength -eq 4) {
+                $addresses.Add(([Net.IPAddress]::new([byte[]]$response[$dataOffset..($dataOffset + 3)])).IPAddressToString)
+            } elseif ($answerClass -eq 1 -and $answerType -eq 28 -and $dataLength -eq 16) {
+                $addresses.Add(([Net.IPAddress]::new([byte[]]$response[$dataOffset..($dataOffset + 15)])).IPAddressToString)
+            } elseif ($answerClass -eq 1 -and $answerType -eq 5) {
+                $cnameNextOffset = $dataOffset
+                $target = Read-DnsName $response $dataOffset ([ref]$cnameNextOffset)
+                $cnameTargets.Add($target.TrimEnd('.').ToLowerInvariant())
+            }
+            $offset = $dataOffset + $dataLength
+        }
+        $addresses = @($addresses | Sort-Object -Unique)
+        $cnameTargets = @($cnameTargets | Sort-Object -Unique)
         if ($addresses.Count -eq 0) {
             [Console]::Error.WriteLine("The configured DNS server returned no $recordType records.")
             exit 2
         }
-        $cnameTargets = @($records | Where-Object { $_.Type -eq 'CNAME' -and $_.NameHost } | ForEach-Object { ([string]$_.NameHost).TrimEnd('.').ToLowerInvariant() } | Sort-Object -Unique)
         [Console]::Out.WriteLine('ADDRESSES=' + ($addresses -join ','))
         [Console]::Out.WriteLine('CNAMES=' + ($cnameTargets -join ','))
         exit 0
