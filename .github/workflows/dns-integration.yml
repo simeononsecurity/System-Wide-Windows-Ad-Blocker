@@ -1,0 +1,35 @@
+name: Windows DNS integration
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  windows-dns:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply full bundled list and verify OS DNS behavior
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $testScript = Join-Path $env:GITHUB_WORKSPACE 'tests/DnsIntegration.ps1'
+          & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $testScript
+          $testExitCode = $LASTEXITCODE
+          $summaryPath = Join-Path $env:RUNNER_TEMP 'dns-integration-summary.md'
+          if (Test-Path -LiteralPath $summaryPath) {
+            Get-Content -LiteralPath $summaryPath -Raw | Out-File -LiteralPath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          }
+          if ($testExitCode -ne 0) { exit $testExitCode }
+      - name: Upload DNS integration evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-dns-integration-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/dns-integration.log
+            ${{ runner.temp }}/dns-integration-summary.md
+          if-no-files-found: warn
+          retention-days: 7

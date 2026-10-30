@@ -27,6 +27,19 @@ try {
     Assert ([Convert]::ToBase64String([IO.File]::ReadAllBytes($hosts)) -eq [Convert]::ToBase64String($initial)) 'Restore changed original bytes'
 
     if ($env:OS -eq 'Windows_NT') {
+        # A transient sharing violation should be retried and recover without
+        # requiring the user to rerun Restore manually.
+        $attempts = [pscustomobject]@{ Count = 0 }
+        $attemptCount = & (Get-Module HostsBlocker) {
+            param($state)
+            Invoke-FileOperationWithRetry -Path 'isolated retry test' -Operation 'test retry handling for' -MaxAttempts 3 -RetryDelayMilliseconds 0 -Action {
+                $state.Count++
+                if ($state.Count -eq 1) { throw [ComponentModel.Win32Exception]::new(32) }
+            }
+            return $state.Count
+        } $attempts
+        Assert ($attemptCount -eq 2) 'Transient sharing violation was not retried'
+
         # A locked hosts file must produce a useful error and leave recovery data intact.
         Invoke-HostsBlocker -HostsPath $hosts -BackupPath $backup -ListPath $list
         $lockedBytes = [IO.File]::ReadAllBytes($hosts)
